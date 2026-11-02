@@ -1,9 +1,39 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
 use common::{ClientMessage, ServerMessage, validate_name};
 
 pub type ClientId = u64;
+
+/// Errors that can occur during server message processing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerError {
+    ClientNotFound,
+    AlreadyRegistered,
+    NotRegistered,
+    InvalidName(String),
+    UsernameTaken(String),
+    UserNotFound(String),
+}
+
+impl std::fmt::Display for ServerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServerError::ClientNotFound => write!(f, "Client not found"),
+            ServerError::AlreadyRegistered => write!(f, "Client is already registered"),
+            ServerError::NotRegistered => write!(f, "Must register before sending messages"),
+            ServerError::InvalidName(err) => write!(f, "{err}"),
+            ServerError::UsernameTaken(name) => write!(f, "Username '{name}' is already taken"),
+            ServerError::UserNotFound(name) => write!(f, "User '{name}' not found"),
+        }
+    }
+}
+
+impl std::error::Error for ServerError {}
 
 /// Represents an active client connection.
 pub struct ClientSession {
@@ -65,65 +95,69 @@ impl ServerState {
         }
     }
 
-    /// Handles an incoming message from a client.
-    pub fn handle_message(&mut self, client_id: ClientId, msg: ClientMessage) {
-        match msg {
-            ClientMessage::Register { username } => {
-                self.handle_register(client_id, username);
-            }
-            ClientMessage::DirectMessage { recipient, content } => {
-                self.handle_direct_message(client_id, recipient, content);
-            }
-        }
+    /// Asserts that a client is registered with a username.
+    /// Returns the registered username on success, or ServerError if not registered or not found.
+    pub fn assert_registered(&self, client_id: ClientId) -> Result<String, ServerError> {
+        let session = self
+            .clients
+            .get(&client_id)
+            .ok_or(ServerError::ClientNotFound)?;
+        session.username.clone().ok_or(ServerError::NotRegistered)
     }
 
-    fn handle_register(&mut self, client_id: ClientId, username: String) {
-        // Validate client session exists
-        let session = match self.clients.get(&client_id) {
-            Some(s) => s,
-            None => return,
+    /// Handles an incoming message from a client.
+    /// Dispatches to the appropriate handler. If the handler returns an Err,
+    /// sends a ServerMessage::Error back to the client.
+    pub fn handle_message(
+        &mut self,
+        client_id: ClientId,
+        msg: ClientMessage,
+    ) -> Result<(), ServerError> {
+        let result = match msg {
+            ClientMessage::Register { username } => self.handle_register(client_id, username),
+            ClientMessage::DirectMessage { recipient, content } => {
+                self.handle_direct_message(client_id, recipient, content)
+            }
         };
 
-        // Reject if client already registered
+        if let Err(ref err) = result {
+            self.send_to(
+                client_id,
+                ServerMessage::Error {
+                    message: err.to_string(),
+                },
+            );
+        }
+
+        result
+    }
+
+    /// Handles client registration with username validation and duplicate checking.
+    pub fn handle_register(
+        &mut self,
+        client_id: ClientId,
+        username: String,
+    ) -> Result<(), ServerError> {
+        let session = self
+            .clients
+            .get(&client_id)
+            .ok_or(ServerError::ClientNotFound)?;
+
         if session.username.is_some() {
-            self.send_to(
-                client_id,
-                ServerMessage::Error {
-                    message: "Client is already registered".to_string(),
-                },
-            );
-            return;
+            return Err(ServerError::AlreadyRegistered);
         }
 
-        // Validate username syntax
-        if let Err(err_msg) = validate_name(&username) {
-            self.send_to(
-                client_id,
-                ServerMessage::Error {
-                    message: err_msg.to_string(),
-                },
-            );
-            return;
-        }
+        validate_name(&username).map_err(|e| ServerError::InvalidName(e.to_string()))?;
 
-        // Check for duplicate username
         if self.users.contains_key(&username) {
-            self.send_to(
-                client_id,
-                ServerMessage::Error {
-                    message: format!("Username '{username}' is already taken"),
-                },
-            );
-            return;
+            return Err(ServerError::UsernameTaken(username));
         }
 
-        // Update session and user registry
         if let Some(session) = self.clients.get_mut(&client_id) {
             session.username = Some(username.clone());
         }
         self.users.insert(username.clone(), client_id);
 
-        // Send confirmation to registered client
         self.send_to(
             client_id,
             ServerMessage::RegisterSuccess {
@@ -131,45 +165,27 @@ impl ServerState {
             },
         );
 
-        // Broadcast updated user list to all registered clients
         let users = self.get_user_list();
         self.broadcast_to_registered(ServerMessage::UserList { users });
+
+        Ok(())
     }
 
-    fn handle_direct_message(&mut self, client_id: ClientId, recipient: String, content: String) {
-        // Find sender's username
-        let sender_username = match self
-            .clients
-            .get(&client_id)
-            .and_then(|s| s.username.clone())
-        {
-            Some(name) => name,
-            None => {
-                self.send_to(
-                    client_id,
-                    ServerMessage::Error {
-                        message: "Must register before sending messages".to_string(),
-                    },
-                );
-                return;
-            }
-        };
+    /// Handles routing direct messages between registered users.
+    pub fn handle_direct_message(
+        &mut self,
+        client_id: ClientId,
+        recipient: String,
+        content: String,
+    ) -> Result<(), ServerError> {
+        let sender_username = self.assert_registered(client_id)?;
 
-        // Find recipient's client id
-        let recipient_id = match self.users.get(&recipient).copied() {
-            Some(id) => id,
-            None => {
-                self.send_to(
-                    client_id,
-                    ServerMessage::Error {
-                        message: format!("User '{recipient}' not found"),
-                    },
-                );
-                return;
-            }
-        };
+        let recipient_id = self
+            .users
+            .get(&recipient)
+            .copied()
+            .ok_or_else(|| ServerError::UserNotFound(recipient.clone()))?;
 
-        // Forward message strictly to receiver
         self.send_to(
             recipient_id,
             ServerMessage::DirectMessage {
@@ -178,6 +194,8 @@ impl ServerState {
                 content,
             },
         );
+
+        Ok(())
     }
 
     /// Sends a message to a specific client if connected.
@@ -219,6 +237,57 @@ impl ServerState {
     }
 }
 
+/// Handles an incoming TCP connection: sets up reader and writer channels,
+/// handles client framing with line-delimited JSON, and cleans up on disconnect.
+pub async fn handle_connection(socket: TcpStream, state: Arc<Mutex<ServerState>>) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let client_id = state.lock().await.connect_client(tx);
+
+    let (reader, mut writer) = socket.into_split();
+
+    // Outbound writer task
+    let writer_task = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if let Ok(mut json) = serde_json::to_string(&msg) {
+                json.push('\n');
+                if let Err(err) = writer.write_all(json.as_bytes()).await {
+                    eprintln!("[Client {client_id}] socket write failed: {err}");
+                    break;
+                }
+            }
+        }
+    });
+
+    // Inbound reader loop
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<ClientMessage>(line) {
+            Ok(msg) => {
+                let mut s = state.lock().await;
+                let _ = s.handle_message(client_id, msg);
+            }
+            Err(err) => {
+                let s = state.lock().await;
+                s.send_to(
+                    client_id,
+                    ServerMessage::Error {
+                        message: format!("Malformed message: {err}"),
+                    },
+                );
+            }
+        }
+    }
+
+    // Clean up on disconnect
+    state.lock().await.disconnect_client(client_id);
+    writer_task.abort();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,16 +314,45 @@ mod tests {
     }
 
     #[test]
-    fn test_register_success() {
+    fn test_assert_registered() {
         let mut server = ServerState::new();
-        let (client_id, mut rx) = setup_client(&mut server);
+        let (client_id, _) = setup_client(&mut server);
 
-        server.handle_message(
+        // Not registered yet
+        assert_eq!(
+            server.assert_registered(client_id),
+            Err(ServerError::NotRegistered)
+        );
+
+        // Nonexistent client
+        assert_eq!(
+            server.assert_registered(9999),
+            Err(ServerError::ClientNotFound)
+        );
+
+        // After registration
+        let res = server.handle_message(
             client_id,
             ClientMessage::Register {
                 username: "alice".to_string(),
             },
         );
+        assert!(res.is_ok());
+        assert_eq!(server.assert_registered(client_id), Ok("alice".to_string()));
+    }
+
+    #[test]
+    fn test_register_success() {
+        let mut server = ServerState::new();
+        let (client_id, mut rx) = setup_client(&mut server);
+
+        let res = server.handle_message(
+            client_id,
+            ClientMessage::Register {
+                username: "alice".to_string(),
+            },
+        );
+        assert_eq!(res, Ok(()));
 
         assert_eq!(
             rx.try_recv().unwrap(),
@@ -278,12 +376,13 @@ mod tests {
         let (client_id, mut rx) = setup_client(&mut server);
 
         // Too short
-        server.handle_message(
+        let res = server.handle_message(
             client_id,
             ClientMessage::Register {
                 username: "al".to_string(),
             },
         );
+        assert!(matches!(res, Err(ServerError::InvalidName(_))));
         match rx.try_recv().unwrap() {
             ServerMessage::Error { message } => {
                 assert!(message.contains("at least 3 characters"));
@@ -292,12 +391,13 @@ mod tests {
         }
 
         // Uppercase not allowed
-        server.handle_message(
+        let res = server.handle_message(
             client_id,
             ClientMessage::Register {
                 username: "Alice".to_string(),
             },
         );
+        assert!(matches!(res, Err(ServerError::InvalidName(_))));
         match rx.try_recv().unwrap() {
             ServerMessage::Error { message } => {
                 assert!(message.contains("[a-z0-9_]"));
@@ -315,12 +415,13 @@ mod tests {
         let (c2, mut rx2) = setup_client(&mut server);
 
         // Client 1 registers as "alice"
-        server.handle_message(
+        let res1 = server.handle_message(
             c1,
             ClientMessage::Register {
                 username: "alice".to_string(),
             },
         );
+        assert_eq!(res1, Ok(()));
         assert!(matches!(
             rx1.try_recv().unwrap(),
             ServerMessage::RegisterSuccess { .. }
@@ -331,12 +432,13 @@ mod tests {
         ));
 
         // Client 2 attempts to also register as "alice"
-        server.handle_message(
+        let res2 = server.handle_message(
             c2,
             ClientMessage::Register {
                 username: "alice".to_string(),
             },
         );
+        assert_eq!(res2, Err(ServerError::UsernameTaken("alice".to_string())));
         match rx2.try_recv().unwrap() {
             ServerMessage::Error { message } => {
                 assert!(message.contains("already taken"));
@@ -350,22 +452,24 @@ mod tests {
         let mut server = ServerState::new();
         let (c1, mut rx1) = setup_client(&mut server);
 
-        server.handle_message(
+        let res1 = server.handle_message(
             c1,
             ClientMessage::Register {
                 username: "alice".to_string(),
             },
         );
+        assert_eq!(res1, Ok(()));
         let _ = rx1.try_recv(); // RegisterSuccess
         let _ = rx1.try_recv(); // UserList
 
         // Attempt second registration on same session
-        server.handle_message(
+        let res2 = server.handle_message(
             c1,
             ClientMessage::Register {
                 username: "bob".to_string(),
             },
         );
+        assert_eq!(res2, Err(ServerError::AlreadyRegistered));
         match rx1.try_recv().unwrap() {
             ServerMessage::Error { message } => {
                 assert!(message.contains("already registered"));
@@ -380,17 +484,25 @@ mod tests {
         let (c1, mut rx1) = setup_client(&mut server);
         let (c2, mut rx2) = setup_client(&mut server);
 
-        server.handle_message(
-            c1,
-            ClientMessage::Register {
-                username: "alice".to_string(),
-            },
+        assert!(
+            server
+                .handle_message(
+                    c1,
+                    ClientMessage::Register {
+                        username: "alice".to_string(),
+                    },
+                )
+                .is_ok()
         );
-        server.handle_message(
-            c2,
-            ClientMessage::Register {
-                username: "bob".to_string(),
-            },
+        assert!(
+            server
+                .handle_message(
+                    c2,
+                    ClientMessage::Register {
+                        username: "bob".to_string(),
+                    },
+                )
+                .is_ok()
         );
 
         // Drain registration messages
@@ -398,13 +510,14 @@ mod tests {
         while rx2.try_recv().is_ok() {}
 
         // Alice sends direct message to Bob
-        server.handle_message(
+        let res = server.handle_message(
             c1,
             ClientMessage::DirectMessage {
                 recipient: "bob".to_string(),
                 content: "hello bob!".to_string(),
             },
         );
+        assert_eq!(res, Ok(()));
 
         // Bob should receive the DM
         assert_eq!(
@@ -425,22 +538,27 @@ mod tests {
         let mut server = ServerState::new();
         let (c1, mut rx1) = setup_client(&mut server);
 
-        server.handle_message(
-            c1,
-            ClientMessage::Register {
-                username: "alice".to_string(),
-            },
+        assert!(
+            server
+                .handle_message(
+                    c1,
+                    ClientMessage::Register {
+                        username: "alice".to_string(),
+                    },
+                )
+                .is_ok()
         );
         while rx1.try_recv().is_ok() {}
 
         // Send DM to nonexistent user
-        server.handle_message(
+        let res = server.handle_message(
             c1,
             ClientMessage::DirectMessage {
                 recipient: "charlie".to_string(),
                 content: "hey".to_string(),
             },
         );
+        assert_eq!(res, Err(ServerError::UserNotFound("charlie".to_string())));
 
         match rx1.try_recv().unwrap() {
             ServerMessage::Error { message } => {
@@ -455,13 +573,14 @@ mod tests {
         let mut server = ServerState::new();
         let (c1, mut rx1) = setup_client(&mut server);
 
-        server.handle_message(
+        let res = server.handle_message(
             c1,
             ClientMessage::DirectMessage {
                 recipient: "bob".to_string(),
                 content: "hey".to_string(),
             },
         );
+        assert_eq!(res, Err(ServerError::NotRegistered));
 
         match rx1.try_recv().unwrap() {
             ServerMessage::Error { message } => {
@@ -477,17 +596,25 @@ mod tests {
         let (c1, mut rx1) = setup_client(&mut server);
         let (c2, mut rx2) = setup_client(&mut server);
 
-        server.handle_message(
-            c1,
-            ClientMessage::Register {
-                username: "alice".to_string(),
-            },
+        assert!(
+            server
+                .handle_message(
+                    c1,
+                    ClientMessage::Register {
+                        username: "alice".to_string(),
+                    },
+                )
+                .is_ok()
         );
-        server.handle_message(
-            c2,
-            ClientMessage::Register {
-                username: "bob".to_string(),
-            },
+        assert!(
+            server
+                .handle_message(
+                    c2,
+                    ClientMessage::Register {
+                        username: "bob".to_string(),
+                    },
+                )
+                .is_ok()
         );
 
         while rx1.try_recv().is_ok() {}
@@ -507,12 +634,13 @@ mod tests {
 
         // "alice" username can now be registered again
         let (c3, mut rx3) = setup_client(&mut server);
-        server.handle_message(
+        let res = server.handle_message(
             c3,
             ClientMessage::Register {
                 username: "alice".to_string(),
             },
         );
+        assert_eq!(res, Ok(()));
         assert_eq!(
             rx3.try_recv().unwrap(),
             ServerMessage::RegisterSuccess {

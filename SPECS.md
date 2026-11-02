@@ -7,6 +7,7 @@ Create a Rust workspace containing two separate binaries: `server` and `client` 
    - Cleanly decoupled server and client binaries runnable on separate machines.
 
 2. **Server Responsibilities:**
+   - Default server port is `8054`.
    - Track connected clients with unique usernames; reject duplicates.
    - Manage chat groups: track group names, creators, and active member sets.
    - Manage group actions: for a group the user created, they may delete; for a group the user joined, they may leave; and for other groups, they may join.
