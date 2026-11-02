@@ -141,11 +141,31 @@ async fn test_client_network_worker_dm_and_disconnect_wiping() {
     let dm_msg = alice_app.send_current_message().unwrap();
     alice_out_tx.send(dm_msg).unwrap();
 
-    // Verify Alice has local chat history for Bob
+    // Verify Alice has local chat history for Bob with pending status
     let alice_history = alice_app.chat_histories.get("bob").unwrap();
     assert_eq!(alice_history.len(), 1);
     assert_eq!(alice_history[0].content, "hello bob!");
     assert!(alice_history[0].is_me);
+    assert!(alice_history[0].is_pending);
+    assert_eq!(alice_history[0].timestamp, None);
+
+    // Alice receives sender echo
+    let ev = tokio::time::timeout(Duration::from_secs(2), alice_in_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    match ev {
+        NetworkEvent::Server(msg @ ServerMessage::DirectMessage { .. }) => {
+            alice_app.handle_server_message(msg);
+        }
+        other => panic!("Expected sender echo DirectMessage, got {:?}", other),
+    }
+
+    // Verify Alice's pending message is resolved
+    let alice_history = alice_app.chat_histories.get("bob").unwrap();
+    assert_eq!(alice_history.len(), 1);
+    assert!(!alice_history[0].is_pending);
+    assert!(alice_history[0].timestamp.is_some());
 
     // Bob receives DM
     let ev = tokio::time::timeout(Duration::from_secs(2), bob_in_rx.recv())
@@ -164,6 +184,8 @@ async fn test_client_network_worker_dm_and_disconnect_wiping() {
     assert_eq!(bob_history.len(), 1);
     assert_eq!(bob_history[0].content, "hello bob!");
     assert!(!bob_history[0].is_me);
+    assert!(!bob_history[0].is_pending);
+    assert!(bob_history[0].timestamp.is_some());
 
     // 5. Alice disconnects
     drop(alice_out_tx);

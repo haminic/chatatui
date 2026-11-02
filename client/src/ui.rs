@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
 
 use crate::app::{ActivePanel, App, ConnectField, Screen};
 
@@ -218,7 +218,6 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
             .map(|(idx, user)| {
                 let is_active_chat = app.active_chat() == Some(user.as_str());
                 let is_cursor = app.cursor_user_idx == Some(idx);
-                let has_messages = app.chat_histories.contains_key(user);
 
                 let badge = if is_active_chat { "●" } else { " " };
 
@@ -296,6 +295,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
     let chat_block = Block::default()
         .borders(Borders::ALL)
         .title(chat_title)
+        .padding(Padding::horizontal(1))
         .style(Style::default().fg(Color::White));
 
     let chat_inner_area = chat_block.inner(right_chunks[0]);
@@ -313,29 +313,66 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
             .alignment(Alignment::Center);
             frame.render_widget(empty_p, chat_inner_area);
         } else {
+            let total_width = chat_inner_area.width as usize;
             let message_lines: Vec<Line> = history
                 .iter()
                 .map(|msg| {
-                    if msg.is_me {
-                        Line::from(vec![
-                            Span::styled(
-                                format!("<{}> ", app.my_username),
-                                Style::default()
-                                    .fg(Color::Green)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::raw(&msg.content),
-                        ])
+                    let sender_str = if msg.is_me {
+                        format!("<{}> ", app.my_username)
                     } else {
-                        Line::from(vec![
-                            Span::styled(
-                                format!("<{}> ", msg.sender),
-                                Style::default()
-                                    .fg(Color::Cyan)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::raw(&msg.content),
-                        ])
+                        format!("<{}> ", msg.sender)
+                    };
+                    let sender_style = if msg.is_me {
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    };
+                    let sender_span = Span::styled(sender_str.clone(), sender_style);
+                    let sender_width = sender_str.len();
+
+                    let content_span = Span::raw(&msg.content);
+                    let content_width = msg.content.chars().count();
+
+                    let left_width = sender_width + content_width;
+
+                    let right_item = if msg.is_pending {
+                        Some((
+                            Span::styled("⏳", Style::default().fg(Color::Yellow)),
+                            2usize,
+                        ))
+                    } else if let Some(time_str) = msg.formatted_time() {
+                        let time_width = time_str.len();
+                        Some((
+                            Span::styled(time_str, Style::default().fg(Color::DarkGray)),
+                            time_width,
+                        ))
+                    } else {
+                        None
+                    };
+
+                    if let Some((right_span, right_width)) = right_item {
+                        if total_width > left_width + right_width {
+                            let pad = total_width - left_width - right_width;
+                            Line::from(vec![
+                                sender_span,
+                                content_span,
+                                Span::raw(" ".repeat(pad)),
+                                right_span,
+                            ])
+                        } else {
+                            Line::from(vec![
+                                sender_span,
+                                content_span,
+                                Span::raw(" "),
+                                right_span,
+                            ])
+                        }
+                    } else {
+                        Line::from(vec![sender_span, content_span])
                     }
                 })
                 .collect();

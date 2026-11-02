@@ -7,6 +7,21 @@ pub struct ChatMessage {
     pub sender: String,
     pub content: String,
     pub is_me: bool,
+    pub is_pending: bool,
+    pub timestamp: Option<u64>,
+}
+
+impl ChatMessage {
+    pub fn formatted_time(&self) -> Option<String> {
+        self.timestamp.map(format_timestamp_12h)
+    }
+}
+
+/// Formats a Unix epoch timestamp (seconds) into 12-hour format "HH:MM AM/PM" using local time.
+pub fn format_timestamp_12h(ts: u64) -> String {
+    let dt = chrono::DateTime::from_timestamp(ts as i64, 0).unwrap_or_default();
+    let local = dt.with_timezone(&chrono::Local);
+    local.format("%I:%M %p").to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,8 +172,32 @@ impl App {
             ServerMessage::UserList { users } => {
                 self.update_user_list(users);
             }
-            ServerMessage::DirectMessage { from, to, content } => {
-                if to == self.my_username {
+            ServerMessage::DirectMessage {
+                from,
+                to,
+                content,
+                timestamp,
+            } => {
+                if from == self.my_username {
+                    // Sender echo for a message we sent
+                    let history = self.chat_histories.entry(to).or_default();
+                    if let Some(pending_msg) = history
+                        .iter_mut()
+                        .find(|m| m.is_me && m.is_pending && m.content == content)
+                    {
+                        pending_msg.is_pending = false;
+                        pending_msg.timestamp = Some(timestamp);
+                    } else {
+                        history.push(ChatMessage {
+                            sender: from,
+                            content,
+                            is_me: true,
+                            is_pending: false,
+                            timestamp: Some(timestamp),
+                        });
+                    }
+                } else if to == self.my_username {
+                    // Incoming message from `from`
                     self.chat_histories
                         .entry(from.clone())
                         .or_default()
@@ -166,8 +205,13 @@ impl App {
                             sender: from,
                             content,
                             is_me: false,
+                            is_pending: false,
+                            timestamp: Some(timestamp),
                         });
                 }
+            }
+            ServerMessage::GroupList { .. } | ServerMessage::GroupMessage { .. } => {
+                // Prepared for group features
             }
         }
     }
@@ -236,7 +280,7 @@ impl App {
             return None;
         }
 
-        // Add to local history
+        // Add to local history as pending
         self.chat_histories
             .entry(recipient.clone())
             .or_default()
@@ -244,6 +288,8 @@ impl App {
                 sender: self.my_username.clone(),
                 content: content.clone(),
                 is_me: true,
+                is_pending: true,
+                timestamp: None,
             });
 
         self.input_message.clear();
@@ -357,6 +403,8 @@ mod tests {
             })
         );
         assert_eq!(app.chat_histories.get("bob").unwrap().len(), 1);
+        assert!(app.chat_histories.get("bob").unwrap()[0].is_pending);
+        assert_eq!(app.chat_histories.get("bob").unwrap()[0].timestamp, None);
 
         // 3. Bob disconnects (new user list only has alice and charlie)
         app.handle_server_message(ServerMessage::UserList {
@@ -425,12 +473,47 @@ mod tests {
             from: "bob".to_string(),
             to: "alice".to_string(),
             content: "hey alice!".to_string(),
+            timestamp: 1730599839,
         });
 
         let history = app.chat_histories.get("bob").expect("expected bob history");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content, "hey alice!");
         assert!(!history[0].is_me);
+        assert!(!history[0].is_pending);
+        assert_eq!(history[0].timestamp, Some(1730599839));
+        assert!(history[0].formatted_time().is_some());
+    }
+
+    #[test]
+    fn test_sender_echo_resolves_pending_message() {
+        let mut app = App::new();
+        app.screen = Screen::Chat;
+        app.my_username = "alice".to_string();
+        app.users = vec!["bob".to_string()];
+        app.active_chat_user = Some("bob".to_string());
+
+        // Alice sends message
+        app.input_message = "msg1".to_string();
+        let _ = app.send_current_message();
+
+        let history = app.chat_histories.get("bob").unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].is_pending);
+        assert_eq!(history[0].timestamp, None);
+
+        // Echo arrives from server
+        app.handle_server_message(ServerMessage::DirectMessage {
+            from: "alice".to_string(),
+            to: "bob".to_string(),
+            content: "msg1".to_string(),
+            timestamp: 1730599839,
+        });
+
+        let history = app.chat_histories.get("bob").unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].is_pending);
+        assert_eq!(history[0].timestamp, Some(1730599839));
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub enum ServerError {
     InvalidName(String),
     UsernameTaken(String),
     UserNotFound(String),
+    Unsupported(String),
 }
 
 impl std::fmt::Display for ServerError {
@@ -29,6 +30,7 @@ impl std::fmt::Display for ServerError {
             ServerError::InvalidName(err) => write!(f, "{err}"),
             ServerError::UsernameTaken(name) => write!(f, "Username '{name}' is already taken"),
             ServerError::UserNotFound(name) => write!(f, "User '{name}' not found"),
+            ServerError::Unsupported(feature) => write!(f, "{feature} is not yet implemented"),
         }
     }
 }
@@ -118,6 +120,13 @@ impl ServerState {
             ClientMessage::DirectMessage { recipient, content } => {
                 self.handle_direct_message(client_id, recipient, content)
             }
+            ClientMessage::GroupMessage { .. }
+            | ClientMessage::CreateGroup { .. }
+            | ClientMessage::JoinGroup { .. }
+            | ClientMessage::LeaveGroup { .. }
+            | ClientMessage::DeleteGroup { .. } => {
+                Err(ServerError::Unsupported("Group features".to_string()))
+            }
         };
 
         if let Err(ref err) = result {
@@ -171,7 +180,7 @@ impl ServerState {
         Ok(())
     }
 
-    /// Handles routing direct messages between registered users.
+    /// Handles routing direct messages between registered users with timestamp and sender echo.
     pub fn handle_direct_message(
         &mut self,
         client_id: ClientId,
@@ -186,14 +195,22 @@ impl ServerState {
             .copied()
             .ok_or_else(|| ServerError::UserNotFound(recipient.clone()))?;
 
-        self.send_to(
-            recipient_id,
-            ServerMessage::DirectMessage {
-                from: sender_username,
-                to: recipient,
-                content,
-            },
-        );
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let srv_msg = ServerMessage::DirectMessage {
+            from: sender_username,
+            to: recipient,
+            content,
+            timestamp,
+        };
+
+        self.send_to(recipient_id, srv_msg.clone());
+        if recipient_id != client_id {
+            self.send_to(client_id, srv_msg);
+        }
 
         Ok(())
     }
@@ -520,17 +537,38 @@ mod tests {
         assert_eq!(res, Ok(()));
 
         // Bob should receive the DM
+        let bob_msg = rx2.try_recv().unwrap();
+        let timestamp = match bob_msg {
+            ServerMessage::DirectMessage {
+                ref from,
+                ref to,
+                ref content,
+                timestamp,
+            } => {
+                assert_eq!(from, "alice");
+                assert_eq!(to, "bob");
+                assert_eq!(content, "hello bob!");
+                assert!(timestamp > 0);
+                timestamp
+            }
+            other => panic!("Expected DirectMessage, got {:?}", other),
+        };
+
+        // Alice should receive sender echo
+        let alice_echo = rx1.try_recv().unwrap();
         assert_eq!(
-            rx2.try_recv().unwrap(),
+            alice_echo,
             ServerMessage::DirectMessage {
                 from: "alice".to_string(),
                 to: "bob".to_string(),
                 content: "hello bob!".to_string(),
+                timestamp,
             }
         );
 
-        // Alice should receive nothing (no error)
+        // No more messages
         assert!(rx1.try_recv().is_err());
+        assert!(rx2.try_recv().is_err());
     }
 
     #[test]

@@ -4,7 +4,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 use common::{ClientMessage, ServerMessage};
-use server::{handle_connection, ServerState};
+use server::{ServerState, handle_connection};
 
 async fn send_msg<W: AsyncWriteExt + Unpin>(writer: &mut W, msg: &ClientMessage) {
     let mut json = serde_json::to_string(msg).unwrap();
@@ -12,8 +12,14 @@ async fn send_msg<W: AsyncWriteExt + Unpin>(writer: &mut W, msg: &ClientMessage)
     writer.write_all(json.as_bytes()).await.unwrap();
 }
 
-async fn read_msg(reader: &mut tokio::io::Lines<BufReader<tokio::net::tcp::ReadHalf<'_>>>) -> ServerMessage {
-    let line = reader.next_line().await.unwrap().expect("expected line, got EOF");
+async fn read_msg(
+    reader: &mut tokio::io::Lines<BufReader<tokio::net::tcp::ReadHalf<'_>>>,
+) -> ServerMessage {
+    let line = reader
+        .next_line()
+        .await
+        .unwrap()
+        .expect("expected line, got EOF");
     serde_json::from_str(&line).unwrap()
 }
 
@@ -112,13 +118,32 @@ async fn test_tcp_server_registration_dm_and_disconnect() {
     .await;
 
     // Bob receives DM
-    let msg = read_msg(&mut bob_lines).await;
+    let bob_dm = read_msg(&mut bob_lines).await;
+    let ts = match bob_dm {
+        ServerMessage::DirectMessage {
+            ref from,
+            ref to,
+            ref content,
+            timestamp,
+        } => {
+            assert_eq!(from, "alice");
+            assert_eq!(to, "bob");
+            assert_eq!(content, "hello over tcp!");
+            assert!(timestamp > 0);
+            timestamp
+        }
+        other => panic!("Expected DirectMessage, got {:?}", other),
+    };
+
+    // Alice receives sender echo
+    let alice_echo = read_msg(&mut alice_lines).await;
     assert_eq!(
-        msg,
+        alice_echo,
         ServerMessage::DirectMessage {
             from: "alice".to_string(),
             to: "bob".to_string(),
             content: "hello over tcp!".to_string(),
+            timestamp: ts,
         }
     );
 
