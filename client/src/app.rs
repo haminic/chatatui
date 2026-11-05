@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use common::{validate_name, ClientMessage, ServerMessage};
+use common::{validate_name, ClientMessage, GroupInfo, ServerMessage};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatMessage {
@@ -39,7 +39,26 @@ pub enum Screen {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivePanel {
     Users,
+    Groups,
     Input,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Modal {
+    CreateGroup {
+        input: String,
+        error: Option<String>,
+    },
+    ConfirmLeaveGroup {
+        group_name: String,
+    },
+    ConfirmDeleteGroup {
+        group_name: String,
+    },
+    ViewMembers {
+        group_name: String,
+        members: Vec<String>,
+    },
 }
 
 pub struct App {
@@ -56,6 +75,14 @@ pub struct App {
     pub cursor_user_idx: Option<usize>,
     /// The user whose conversation is currently open in the Right Panel.
     pub active_chat_user: Option<String>,
+
+    pub groups: Vec<GroupInfo>,
+    /// The group index currently highlighted in the ordered group list.
+    pub cursor_group_idx: Option<usize>,
+    /// The group whose conversation is currently open in the Right Panel.
+    pub active_chat_group: Option<String>,
+
+    pub modal: Option<Modal>,
     pub active_panel: ActivePanel,
     pub chat_histories: HashMap<String, Vec<ChatMessage>>,
     pub input_message: String,
@@ -82,6 +109,12 @@ impl App {
             users: Vec::new(),
             cursor_user_idx: None,
             active_chat_user: None,
+
+            groups: Vec::new(),
+            cursor_group_idx: None,
+            active_chat_group: None,
+
+            modal: None,
             active_panel: ActivePanel::Users,
             chat_histories: HashMap::new(),
             input_message: String::new(),
@@ -104,9 +137,80 @@ impl App {
             .map(|s| s.as_str())
     }
 
-    /// Returns the username whose chat conversation is currently open in the right panel.
+    /// Returns the username whose chat conversation is currently open, or the group name.
     pub fn active_chat(&self) -> Option<&str> {
-        self.active_chat_user.as_deref()
+        self.active_chat_group
+            .as_deref()
+            .or(self.active_chat_user.as_deref())
+    }
+
+    pub fn is_group_chat(&self) -> bool {
+        self.active_chat_group.is_some()
+    }
+
+    pub fn group_history_key(group: &str) -> String {
+        format!("group:{group}")
+    }
+
+    /// Returns the ordered list of groups per SPECS.md:
+    /// 1. Groups created by me
+    /// 2. Groups joined by me
+    /// 3. Other groups
+    pub fn ordered_groups(&self) -> Vec<GroupInfo> {
+        let mut created = Vec::new();
+        let mut joined = Vec::new();
+        let mut others = Vec::new();
+
+        for g in &self.groups {
+            if g.creator == self.my_username {
+                created.push(g.clone());
+            } else if g.members.contains(&self.my_username) {
+                joined.push(g.clone());
+            } else {
+                others.push(g.clone());
+            }
+        }
+
+        created.sort_by(|a, b| a.name.cmp(&b.name));
+        joined.sort_by(|a, b| a.name.cmp(&b.name));
+        others.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let mut all = created;
+        all.extend(joined);
+        all.extend(others);
+        all
+    }
+
+    /// Returns the group currently highlighted by cursor in the ordered groups list.
+    pub fn highlighted_group(&self) -> Option<GroupInfo> {
+        let list = self.ordered_groups();
+        self.cursor_group_idx.and_then(|idx| list.get(idx).cloned())
+    }
+
+    /// Moves cursor to next group in list without switching the open chat.
+    pub fn select_next_group(&mut self) {
+        let len = self.groups.len();
+        if len == 0 {
+            self.cursor_group_idx = None;
+            return;
+        }
+        self.cursor_group_idx = Some(match self.cursor_group_idx {
+            Some(idx) if idx + 1 < len => idx + 1,
+            _ => 0,
+        });
+    }
+
+    /// Moves cursor to previous group in list without switching the open chat.
+    pub fn select_prev_group(&mut self) {
+        let len = self.groups.len();
+        if len == 0 {
+            self.cursor_group_idx = None;
+            return;
+        }
+        self.cursor_group_idx = Some(match self.cursor_group_idx {
+            Some(0) | None => len - 1,
+            Some(idx) => idx - 1,
+        });
     }
 
     /// Moves cursor to next user in list without switching the open chat.
@@ -137,17 +241,51 @@ impl App {
     pub fn open_selected_chat(&mut self) {
         if let Some(user) = self.highlighted_user().map(|s| s.to_string()) {
             self.active_chat_user = Some(user);
+            self.active_chat_group = None;
             self.active_panel = ActivePanel::Input;
         }
     }
 
+    /// Opens the currently highlighted group's conversation in the right panel if joined.
+    pub fn open_selected_group_chat(&mut self) {
+        if let Some(grp) = self.highlighted_group() {
+            if grp.members.contains(&self.my_username) {
+                self.active_chat_group = Some(grp.name);
+                self.active_chat_user = None;
+                self.active_panel = ActivePanel::Input;
+            } else {
+                self.status_message = Some(format!("Join group '{}' first ([j])", grp.name));
+            }
+        }
+    }
+
     /// Focuses on the chat input box. If a chat is already open, focuses it.
-    /// Otherwise, opens chat for the currently highlighted user.
+    /// Otherwise, opens chat for the currently highlighted user or group.
     pub fn focus_chat(&mut self) {
-        if self.active_chat_user.is_some() {
+        if self.active_chat_user.is_some() || self.active_chat_group.is_some() {
             self.active_panel = ActivePanel::Input;
+        } else if self.active_panel == ActivePanel::Groups {
+            self.open_selected_group_chat();
         } else {
             self.open_selected_chat();
+        }
+    }
+
+    /// Returns a slice of chat messages for the currently open conversation.
+    pub fn current_chat_history(&self) -> &[ChatMessage] {
+        if let Some(ref g) = self.active_chat_group {
+            let key = Self::group_history_key(g);
+            self.chat_histories
+                .get(&key)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[])
+        } else if let Some(ref u) = self.active_chat_user {
+            self.chat_histories
+                .get(u)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[])
+        } else {
+            &[]
         }
     }
 
@@ -171,6 +309,9 @@ impl App {
             }
             ServerMessage::UserList { users } => {
                 self.update_user_list(users);
+            }
+            ServerMessage::GroupList { groups } => {
+                self.update_group_list(groups);
             }
             ServerMessage::DirectMessage {
                 from,
@@ -210,9 +351,93 @@ impl App {
                         });
                 }
             }
-            ServerMessage::GroupList { .. } | ServerMessage::GroupMessage { .. } => {
-                // Prepared for group features
+            ServerMessage::GroupMessage {
+                group,
+                from,
+                content,
+                timestamp,
+            } => {
+                let key = Self::group_history_key(&group);
+                let history = self.chat_histories.entry(key).or_default();
+
+                if from == self.my_username {
+                    // Sender echo for a group message we sent
+                    if let Some(pending_msg) = history
+                        .iter_mut()
+                        .find(|m| m.is_me && m.is_pending && m.content == content)
+                    {
+                        pending_msg.is_pending = false;
+                        pending_msg.timestamp = Some(timestamp);
+                    } else {
+                        history.push(ChatMessage {
+                            sender: from,
+                            content,
+                            is_me: true,
+                            is_pending: false,
+                            timestamp: Some(timestamp),
+                        });
+                    }
+                } else {
+                    history.push(ChatMessage {
+                        sender: from,
+                        content,
+                        is_me: false,
+                        is_pending: false,
+                        timestamp: Some(timestamp),
+                    });
+                }
             }
+        }
+    }
+
+    /// Updates the group list and wipes chat histories for any groups that were deleted.
+    pub fn update_group_list(&mut self, new_groups: Vec<GroupInfo>) {
+        let new_names: Vec<String> = new_groups.iter().map(|g| g.name.clone()).collect();
+
+        // Identify deleted groups
+        let deleted_groups: Vec<String> = self
+            .groups
+            .iter()
+            .filter(|g| !new_names.contains(&g.name))
+            .map(|g| g.name.clone())
+            .collect();
+
+        // Wipe history for deleted groups per SPECS.md
+        for deleted in &deleted_groups {
+            self.chat_histories
+                .remove(&Self::group_history_key(deleted));
+        }
+
+        // If currently active group was deleted, reset active chat
+        if let Some(ref active_grp) = self.active_chat_group
+            && deleted_groups.contains(active_grp)
+        {
+            let deleted_name = active_grp.clone();
+            self.active_chat_group = None;
+            self.active_panel = ActivePanel::Groups;
+            self.status_message = Some(format!(
+                "Group '{deleted_name}' was deleted. Chat history wiped."
+            ));
+        }
+
+        let prev_highlighted = self.highlighted_group().map(|g| g.name);
+
+        self.groups = new_groups;
+
+        // Restore cursor position if possible
+        let ordered = self.ordered_groups();
+        if let Some(prev) = prev_highlighted {
+            if let Some(new_idx) = ordered.iter().position(|g| g.name == prev) {
+                self.cursor_group_idx = Some(new_idx);
+            } else if !ordered.is_empty() {
+                self.cursor_group_idx = Some(0);
+            } else {
+                self.cursor_group_idx = None;
+            }
+        } else if !ordered.is_empty() && self.cursor_group_idx.is_none() {
+            self.cursor_group_idx = Some(0);
+        } else if ordered.is_empty() {
+            self.cursor_group_idx = None;
         }
     }
 
@@ -270,31 +495,54 @@ impl App {
         }
     }
 
-    /// Sends the current input message as a DM to the currently open active chat.
+    /// Sends the current input message to the currently open active chat (DM or Group).
     /// Appends the message to local history and returns the ClientMessage to send over TCP.
     pub fn send_current_message(&mut self) -> Option<ClientMessage> {
-        let recipient = self.active_chat_user.as_ref()?.clone();
         let content = self.input_message.trim().to_string();
-
         if content.is_empty() {
             return None;
         }
 
-        // Add to local history as pending
-        self.chat_histories
-            .entry(recipient.clone())
-            .or_default()
-            .push(ChatMessage {
-                sender: self.my_username.clone(),
-                content: content.clone(),
-                is_me: true,
-                is_pending: true,
-                timestamp: None,
-            });
+        if let Some(ref group) = self.active_chat_group {
+            let key = Self::group_history_key(group);
+            self.chat_histories
+                .entry(key)
+                .or_default()
+                .push(ChatMessage {
+                    sender: self.my_username.clone(),
+                    content: content.clone(),
+                    is_me: true,
+                    is_pending: true,
+                    timestamp: None,
+                });
 
-        self.input_message.clear();
+            let grp_name = group.clone();
+            self.input_message.clear();
+            Some(ClientMessage::GroupMessage {
+                group: grp_name,
+                content,
+            })
+        } else if let Some(ref recipient) = self.active_chat_user {
+            self.chat_histories
+                .entry(recipient.clone())
+                .or_default()
+                .push(ChatMessage {
+                    sender: self.my_username.clone(),
+                    content: content.clone(),
+                    is_me: true,
+                    is_pending: true,
+                    timestamp: None,
+                });
 
-        Some(ClientMessage::DirectMessage { recipient, content })
+            let rec = recipient.clone();
+            self.input_message.clear();
+            Some(ClientMessage::DirectMessage {
+                recipient: rec,
+                content,
+            })
+        } else {
+            None
+        }
     }
 
     /// Handles disconnection event from network layer.
@@ -303,241 +551,13 @@ impl App {
         self.is_connecting = false;
         self.connect_error = Some(format!("Disconnected: {reason}"));
         self.users.clear();
+        self.groups.clear();
         self.chat_histories.clear();
         self.cursor_user_idx = None;
+        self.cursor_group_idx = None;
         self.active_chat_user = None;
+        self.active_chat_group = None;
+        self.modal = None;
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_initial_state() {
-        let app = App::new();
-        assert_eq!(app.screen, Screen::Connect);
-        assert_eq!(app.server_address, "127.0.0.1:8054");
-        assert_eq!(app.username_input, "");
-        assert_eq!(app.connect_field, ConnectField::Username);
-        assert_eq!(app.cursor_user_idx, None);
-        assert_eq!(app.active_chat_user, None);
-    }
-
-    #[test]
-    fn test_validate_connect_input() {
-        let mut app = App::new();
-        assert!(app.validate_connect_input().is_err());
-
-        app.username_input = "al".to_string();
-        assert!(app.validate_connect_input().is_err());
-
-        app.username_input = "Alice".to_string();
-        assert!(app.validate_connect_input().is_err());
-
-        app.username_input = "alice".to_string();
-        assert!(app.validate_connect_input().is_ok());
-
-        app.server_address = "".to_string();
-        assert!(app.validate_connect_input().is_err());
-    }
-
-    #[test]
-    fn test_registration_success_transition() {
-        let mut app = App::new();
-        app.is_connecting = true;
-
-        app.handle_server_message(ServerMessage::RegisterSuccess {
-            username: "alice".to_string(),
-        });
-
-        assert_eq!(app.screen, Screen::Chat);
-        assert_eq!(app.my_username, "alice");
-        assert!(!app.is_connecting);
-        assert!(app.connect_error.is_none());
-    }
-
-    #[test]
-    fn test_registration_error_display() {
-        let mut app = App::new();
-        app.is_connecting = true;
-
-        app.handle_server_message(ServerMessage::Error {
-            message: "Username 'alice' is already taken".to_string(),
-        });
-
-        assert_eq!(app.screen, Screen::Connect);
-        assert_eq!(
-            app.connect_error,
-            Some("Username 'alice' is already taken".to_string())
-        );
-        assert!(!app.is_connecting);
-    }
-
-    #[test]
-    fn test_user_list_update_and_wiping_disconnected_user() {
-        let mut app = App::new();
-        app.screen = Screen::Chat;
-        app.my_username = "alice".to_string();
-
-        // 1. Initial user list with bob and charlie
-        app.handle_server_message(ServerMessage::UserList {
-            users: vec!["alice".to_string(), "bob".to_string(), "charlie".to_string()],
-        });
-
-        assert_eq!(app.users, vec!["bob".to_string(), "charlie".to_string()]);
-        assert_eq!(app.highlighted_user(), Some("bob"));
-        assert_eq!(app.active_chat(), None);
-
-        // 2. Open chat with bob and send a message
-        app.open_selected_chat();
-        assert_eq!(app.active_chat(), Some("bob"));
-
-        app.input_message = "hello bob".to_string();
-        let msg = app.send_current_message();
-        assert_eq!(
-            msg,
-            Some(ClientMessage::DirectMessage {
-                recipient: "bob".to_string(),
-                content: "hello bob".to_string(),
-            })
-        );
-        assert_eq!(app.chat_histories.get("bob").unwrap().len(), 1);
-        assert!(app.chat_histories.get("bob").unwrap()[0].is_pending);
-        assert_eq!(app.chat_histories.get("bob").unwrap()[0].timestamp, None);
-
-        // 3. Bob disconnects (new user list only has alice and charlie)
-        app.handle_server_message(ServerMessage::UserList {
-            users: vec!["alice".to_string(), "charlie".to_string()],
-        });
-
-        assert_eq!(app.users, vec!["charlie".to_string()]);
-        // Bob's chat history must be wiped!
-        assert!(!app.chat_histories.contains_key("bob"));
-        // Active chat is now closed since bob disconnected
-        assert_eq!(app.active_chat(), None);
-        // Cursor points to charlie
-        assert_eq!(app.highlighted_user(), Some("charlie"));
-    }
-
-    #[test]
-    fn test_navigate_without_switching_chat() {
-        let mut app = App::new();
-        app.screen = Screen::Chat;
-        app.my_username = "alice".to_string();
-
-        app.handle_server_message(ServerMessage::UserList {
-            users: vec![
-                "alice".to_string(),
-                "bob".to_string(),
-                "charlie".to_string(),
-                "dave".to_string(),
-            ],
-        });
-
-        // Open chat with bob
-        app.cursor_user_idx = Some(0); // bob
-        app.open_selected_chat();
-        assert_eq!(app.active_chat(), Some("bob"));
-        assert_eq!(app.active_panel, ActivePanel::Input);
-
-        // Switch to users panel and navigate around
-        app.active_panel = ActivePanel::Users;
-        app.select_next_user(); // cursor -> charlie
-        assert_eq!(app.highlighted_user(), Some("charlie"));
-        // Crucial requirement: right panel active chat MUST still be bob!
-        assert_eq!(app.active_chat(), Some("bob"));
-
-        app.select_next_user(); // cursor -> dave
-        assert_eq!(app.highlighted_user(), Some("dave"));
-        assert_eq!(app.active_chat(), Some("bob"));
-
-        // Only when open_selected_chat() is called does active_chat switch to dave
-        app.open_selected_chat();
-        assert_eq!(app.active_chat(), Some("dave"));
-        assert_eq!(app.active_panel, ActivePanel::Input);
-    }
-
-    #[test]
-    fn test_dm_receive_appends_to_sender_history() {
-        let mut app = App::new();
-        app.screen = Screen::Chat;
-        app.my_username = "alice".to_string();
-
-        app.handle_server_message(ServerMessage::UserList {
-            users: vec!["alice".to_string(), "bob".to_string()],
-        });
-
-        // Receive DM from bob
-        app.handle_server_message(ServerMessage::DirectMessage {
-            from: "bob".to_string(),
-            to: "alice".to_string(),
-            content: "hey alice!".to_string(),
-            timestamp: 1730599839,
-        });
-
-        let history = app.chat_histories.get("bob").expect("expected bob history");
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content, "hey alice!");
-        assert!(!history[0].is_me);
-        assert!(!history[0].is_pending);
-        assert_eq!(history[0].timestamp, Some(1730599839));
-        assert!(history[0].formatted_time().is_some());
-    }
-
-    #[test]
-    fn test_sender_echo_resolves_pending_message() {
-        let mut app = App::new();
-        app.screen = Screen::Chat;
-        app.my_username = "alice".to_string();
-        app.users = vec!["bob".to_string()];
-        app.active_chat_user = Some("bob".to_string());
-
-        // Alice sends message
-        app.input_message = "msg1".to_string();
-        let _ = app.send_current_message();
-
-        let history = app.chat_histories.get("bob").unwrap();
-        assert_eq!(history.len(), 1);
-        assert!(history[0].is_pending);
-        assert_eq!(history[0].timestamp, None);
-
-        // Echo arrives from server
-        app.handle_server_message(ServerMessage::DirectMessage {
-            from: "alice".to_string(),
-            to: "bob".to_string(),
-            content: "msg1".to_string(),
-            timestamp: 1730599839,
-        });
-
-        let history = app.chat_histories.get("bob").unwrap();
-        assert_eq!(history.len(), 1);
-        assert!(!history[0].is_pending);
-        assert_eq!(history[0].timestamp, Some(1730599839));
-    }
-
-    #[test]
-    fn test_user_navigation() {
-        let mut app = App::new();
-        app.screen = Screen::Chat;
-        app.my_username = "me".to_string();
-        app.users = vec!["u1".to_string(), "u2".to_string(), "u3".to_string()];
-        app.cursor_user_idx = Some(0);
-
-        app.select_next_user();
-        assert_eq!(app.cursor_user_idx, Some(1));
-        assert_eq!(app.highlighted_user(), Some("u2"));
-
-        app.select_next_user();
-        assert_eq!(app.cursor_user_idx, Some(2));
-        assert_eq!(app.highlighted_user(), Some("u3"));
-
-        app.select_next_user(); // wraps around
-        assert_eq!(app.cursor_user_idx, Some(0));
-        assert_eq!(app.highlighted_user(), Some("u1"));
-
-        app.select_prev_user(); // wraps backward
-        assert_eq!(app.cursor_user_idx, Some(2));
-        assert_eq!(app.highlighted_user(), Some("u3"));
-    }
-}

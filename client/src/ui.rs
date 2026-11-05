@@ -4,12 +4,17 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
 
-use crate::app::{ActivePanel, App, ConnectField, Screen};
+use crate::app::{ActivePanel, App, ConnectField, Modal, Screen};
 
 pub fn render(frame: &mut Frame, app: &App) {
     match app.screen {
         Screen::Connect => render_connect_screen(frame, app),
-        Screen::Chat => render_chat_screen(frame, app),
+        Screen::Chat => {
+            render_chat_screen(frame, app);
+            if let Some(ref modal) = app.modal {
+                render_modal(frame, modal);
+            }
+        }
     }
 }
 
@@ -257,24 +262,78 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
     state.select(app.cursor_user_idx);
     frame.render_stateful_widget(users_list, left_chunks[0], &mut state);
 
-    // 2. Groups List (placeholder for DM phase per SPECS.md)
-    let groups_p = Paragraph::new(vec![
-        Line::from(Span::styled(
-            " (Groups feature",
+    // 2. Groups List (R9 & SPECS.md)
+    let groups_border_style = if app.active_panel == ActivePanel::Groups {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let ordered_grps = app.ordered_groups();
+    let groups_items: Vec<ListItem> = if ordered_grps.is_empty() {
+        vec![ListItem::new(Span::styled(
+            " (no groups created yet)",
             Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            "  coming soon)",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ])
-    .block(
+        ))]
+    } else {
+        ordered_grps
+            .iter()
+            .enumerate()
+            .map(|(idx, grp)| {
+                let is_active_chat = app.active_chat_group.as_deref() == Some(&grp.name);
+                let is_cursor = app.cursor_group_idx == Some(idx);
+                let is_creator = grp.creator == app.my_username;
+                let is_member = grp.members.contains(&app.my_username);
+
+                let badge = if is_active_chat { "●" } else { " " };
+                let role_badge = if is_creator {
+                    "[created]"
+                } else if is_member {
+                    "[joined]"
+                } else {
+                    "[join]"
+                };
+
+                let content = format!(
+                    "{badge} #{name} {role} ({count})",
+                    name = grp.name,
+                    role = role_badge,
+                    count = grp.members.len(),
+                );
+
+                let style = if is_cursor && app.active_panel == ActivePanel::Groups {
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_cursor {
+                    Style::default().bg(Color::DarkGray).fg(Color::White)
+                } else if is_active_chat {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_member {
+                    Style::default().fg(Color::White)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+
+                ListItem::new(Span::styled(content, style))
+            })
+            .collect()
+    };
+
+    let groups_list = List::new(groups_items).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(" Groups (0) "),
+            .border_style(groups_border_style)
+            .title(format!(" Groups ({}) [c: New] ", app.groups.len())),
     );
-    frame.render_widget(groups_p, left_chunks[1]);
+    let mut grp_state = ListState::default();
+    grp_state.select(app.cursor_group_idx);
+    frame.render_stateful_widget(groups_list, left_chunks[1], &mut grp_state);
 
     // Right Panel: Split vertically into Chat History (top) and Message Input (bottom)
     let right_chunks = Layout::default()
@@ -287,9 +346,12 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
 
     // Chat History View
     let active_chat_opt = app.active_chat();
-    let chat_title = match active_chat_opt {
-        Some(user) => format!(" Chat with @{user} "),
-        None => " Chat (No active conversation) ".to_string(),
+    let chat_title = if let Some(ref grp_name) = app.active_chat_group {
+        format!(" Group Chat #{grp_name} ")
+    } else if let Some(ref user) = app.active_chat_user {
+        format!(" Chat with @{user} ")
+    } else {
+        " Chat (No active conversation) ".to_string()
     };
 
     let chat_block = Block::default()
@@ -301,83 +363,64 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
     let chat_inner_area = chat_block.inner(right_chunks[0]);
     frame.render_widget(chat_block, right_chunks[0]);
 
-    if let Some(user) = active_chat_opt {
-        let empty_vec = Vec::new();
-        let history = app.chat_histories.get(user).unwrap_or(&empty_vec);
+    if active_chat_opt.is_some() {
+        let history = app.current_chat_history();
 
         if history.is_empty() {
             let empty_p = Paragraph::new(vec![Line::from(Span::styled(
-                "No messages yet. Send a direct message below!",
+                "No messages yet. Send a message below!",
                 Style::default().fg(Color::DarkGray),
             ))])
             .alignment(Alignment::Center);
             frame.render_widget(empty_p, chat_inner_area);
         } else {
-            let total_width = chat_inner_area.width as usize;
             let message_lines: Vec<Line> = history
                 .iter()
                 .map(|msg| {
-                    let sender_str = if msg.is_me {
-                        format!("<{}> ", app.my_username)
-                    } else {
-                        format!("<{}> ", msg.sender)
-                    };
-                    let sender_style = if msg.is_me {
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    };
-                    let sender_span = Span::styled(sender_str.clone(), sender_style);
-                    let sender_width = sender_str.len();
-
-                    let content_span = Span::raw(&msg.content);
-                    let content_width = msg.content.chars().count();
-
-                    let left_width = sender_width + content_width;
-
-                    let right_item = if msg.is_pending {
-                        Some((
-                            Span::styled("⏳", Style::default().fg(Color::Yellow)),
-                            2usize,
+                    if msg.sender == "system" {
+                        Line::from(Span::styled(
+                            format!("* {} *", msg.content),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::ITALIC),
                         ))
-                    } else if let Some(time_str) = msg.formatted_time() {
-                        let time_width = time_str.len();
-                        Some((
-                            Span::styled(time_str, Style::default().fg(Color::DarkGray)),
-                            time_width,
-                        ))
+                        .alignment(Alignment::Center)
                     } else {
-                        None
-                    };
-
-                    if let Some((right_span, right_width)) = right_item {
-                        if total_width > left_width + right_width {
-                            let pad = total_width - left_width - right_width;
-                            Line::from(vec![
-                                sender_span,
-                                content_span,
-                                Span::raw(" ".repeat(pad)),
-                                right_span,
-                            ])
+                        let sender_str = if msg.is_me {
+                            format!("<{}> ", app.my_username)
                         } else {
-                            Line::from(vec![
-                                sender_span,
-                                content_span,
-                                Span::raw(" "),
-                                right_span,
-                            ])
-                        }
-                    } else {
-                        Line::from(vec![sender_span, content_span])
+                            format!("<{}> ", msg.sender)
+                        };
+                        let sender_style = if msg.is_me {
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD)
+                        };
+                        let sender_span = Span::styled(sender_str, sender_style);
+                        let content_span = Span::raw(&msg.content);
+
+                        let time_span = if msg.is_pending {
+                            Span::styled("  ⏳", Style::default().fg(Color::Yellow))
+                        } else if let Some(time_str) = msg.formatted_time() {
+                            Span::styled(
+                                format!("  {time_str}"),
+                                Style::default().fg(Color::DarkGray),
+                            )
+                        } else {
+                            Span::raw("")
+                        };
+
+                        Line::from(vec![sender_span, content_span, time_span])
+                            .alignment(Alignment::Left)
                     }
                 })
                 .collect();
 
-            // Calculate auto-scroll if message lines exceed visible height
+            // Auto-scroll to bottom of chat
             let visible_height = chat_inner_area.height as usize;
             let total_lines = message_lines.len();
             let scroll_offset = if total_lines > visible_height {
@@ -398,7 +441,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 Style::default().fg(Color::Yellow),
             )),
             Line::from(Span::styled(
-                "Browse users on the left with [j/k] and press [Enter] to open chat.",
+                "Browse users/groups on the left and press [Enter] to open chat.",
                 Style::default().fg(Color::DarkGray),
             )),
         ])
@@ -420,9 +463,12 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
     } else {
         ""
     };
-    let input_title = match active_chat_opt {
-        Some(user) => format!(" Message @{user} (Press Enter to send) "),
-        None => " Message (Press Enter on a user to start chatting) ".to_string(),
+    let input_title = if let Some(ref grp_name) = app.active_chat_group {
+        format!(" Message #{grp_name} (Press Enter to send) ")
+    } else if let Some(ref user) = app.active_chat_user {
+        format!(" Message @{user} (Press Enter to send) ")
+    } else {
+        " Message (Select a user or joined group to start chatting) ".to_string()
     };
 
     let input_p = Paragraph::new(format!("{}{}", app.input_message, input_cursor)).block(
@@ -438,17 +484,39 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
         ActivePanel::Users => vec![
             Span::styled("[j/k] ", Style::default().fg(Color::Cyan)),
             Span::raw("Browse Users   "),
-            Span::styled("[Enter/l] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Open Chat   "),
+            Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
+            Span::raw("Open DM   "),
             Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Focus Chat   "),
+            Span::raw("Groups Panel   "),
+            Span::styled("[c] ", Style::default().fg(Color::Cyan)),
+            Span::raw("Create Group   "),
             Span::styled("[Ctrl+C] ", Style::default().fg(Color::Cyan)),
             Span::raw("Quit"),
+        ],
+        ActivePanel::Groups => vec![
+            Span::styled("[j/k] ", Style::default().fg(Color::Cyan)),
+            Span::raw("Browse Groups   "),
+            Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
+            Span::raw("Open Chat   "),
+            Span::styled("[j] ", Style::default().fg(Color::Cyan)),
+            Span::raw("Join   "),
+            Span::styled("[l] ", Style::default().fg(Color::Cyan)),
+            Span::raw("Leave   "),
+            Span::styled("[d] ", Style::default().fg(Color::Cyan)),
+            Span::raw("Delete   "),
+            Span::styled("[m] ", Style::default().fg(Color::Cyan)),
+            Span::raw("Members   "),
+            Span::styled("[c] ", Style::default().fg(Color::Cyan)),
+            Span::raw("New Group   "),
+            Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
+            Span::raw("Focus Chat"),
         ],
         ActivePanel::Input => vec![
             Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
             Span::raw("Send Message   "),
-            Span::styled("[Esc/Tab] ", Style::default().fg(Color::Cyan)),
+            Span::styled("[Esc] ", Style::default().fg(Color::Cyan)),
+            Span::raw("Exit Chat   "),
+            Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
             Span::raw("Browse Users   "),
             Span::styled("[Ctrl+C] ", Style::default().fg(Color::Cyan)),
             Span::raw("Quit"),
@@ -468,4 +536,166 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
     full_spans.extend(status_span);
 
     frame.render_widget(Paragraph::new(Line::from(full_spans)), main_chunks[2]);
+}
+
+fn render_modal(frame: &mut Frame, modal: &Modal) {
+    let size = frame.area();
+
+    match modal {
+        Modal::CreateGroup { input, error } => {
+            let area = centered_rect(50, 30, size);
+            frame.render_widget(Clear, area);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Create New Group ")
+                .title_alignment(Alignment::Center)
+                .style(Style::default().fg(Color::White));
+            frame.render_widget(block.clone(), area);
+
+            let inner = block.inner(area);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([
+                    Constraint::Length(3), // input
+                    Constraint::Length(2), // error
+                    Constraint::Length(1), // hints
+                ])
+                .split(inner);
+
+            let input_p = Paragraph::new(format!("{input}_")).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    .title(" Group Name [a-z0-9_] "),
+            );
+            frame.render_widget(input_p, chunks[0]);
+
+            if let Some(err) = error {
+                let err_p = Paragraph::new(Span::styled(
+                    format!("Error: {err}"),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ));
+                frame.render_widget(err_p, chunks[1]);
+            }
+
+            let hints = Paragraph::new(Line::from(vec![
+                Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
+                Span::raw("Create   "),
+                Span::styled("[Esc] ", Style::default().fg(Color::Cyan)),
+                Span::raw("Cancel"),
+            ]))
+            .alignment(Alignment::Center);
+            frame.render_widget(hints, chunks[2]);
+        }
+        Modal::ConfirmLeaveGroup { group_name } => {
+            let area = centered_rect(45, 20, size);
+            frame.render_widget(Clear, area);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Leave Group ")
+                .title_alignment(Alignment::Center)
+                .style(Style::default().fg(Color::White));
+            frame.render_widget(block.clone(), area);
+
+            let inner = block.inner(area);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([Constraint::Length(2), Constraint::Length(1)])
+                .split(inner);
+
+            let text = Paragraph::new(format!("Are you sure you want to leave #{group_name}?"))
+                .alignment(Alignment::Center);
+            frame.render_widget(text, chunks[0]);
+
+            let hints = Paragraph::new(Line::from(vec![
+                Span::styled("[y/Enter] ", Style::default().fg(Color::Yellow)),
+                Span::raw("Leave   "),
+                Span::styled("[n/Esc] ", Style::default().fg(Color::Cyan)),
+                Span::raw("Cancel"),
+            ]))
+            .alignment(Alignment::Center);
+            frame.render_widget(hints, chunks[1]);
+        }
+        Modal::ConfirmDeleteGroup { group_name } => {
+            let area = centered_rect(50, 22, size);
+            frame.render_widget(Clear, area);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title(" Delete Group ")
+                .title_alignment(Alignment::Center);
+            frame.render_widget(block.clone(), area);
+
+            let inner = block.inner(area);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([Constraint::Length(2), Constraint::Length(1)])
+                .split(inner);
+
+            let text = Paragraph::new(vec![
+                Line::from(Span::styled(
+                    format!("Delete group #{group_name}?"),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::raw("This will delete the group for all members.")),
+            ])
+            .alignment(Alignment::Center);
+            frame.render_widget(text, chunks[0]);
+
+            let hints = Paragraph::new(Line::from(vec![
+                Span::styled("[y/Enter] ", Style::default().fg(Color::Red)),
+                Span::raw("Delete   "),
+                Span::styled("[n/Esc] ", Style::default().fg(Color::Cyan)),
+                Span::raw("Cancel"),
+            ]))
+            .alignment(Alignment::Center);
+            frame.render_widget(hints, chunks[1]);
+        }
+        Modal::ViewMembers {
+            group_name,
+            members,
+        } => {
+            let area = centered_rect(45, 45, size);
+            frame.render_widget(Clear, area);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Members of #{group_name} ({}) ", members.len()))
+                .title_alignment(Alignment::Center);
+            frame.render_widget(block.clone(), area);
+
+            let inner = block.inner(area);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([Constraint::Min(3), Constraint::Length(1)])
+                .split(inner);
+
+            let items: Vec<ListItem> = members
+                .iter()
+                .map(|m| {
+                    ListItem::new(Span::styled(
+                        format!("  @{m}"),
+                        Style::default().fg(Color::Cyan),
+                    ))
+                })
+                .collect();
+            let list = List::new(items)
+                .block(Block::default().borders(Borders::ALL).title(" Members "));
+            frame.render_widget(list, chunks[0]);
+
+            let hints = Paragraph::new(Line::from(vec![
+                Span::styled("[Esc/Enter] ", Style::default().fg(Color::Cyan)),
+                Span::raw("Close"),
+            ]))
+            .alignment(Alignment::Center);
+            frame.render_widget(hints, chunks[1]);
+        }
+    }
 }

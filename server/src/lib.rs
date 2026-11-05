@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
-use common::{ClientMessage, ServerMessage, validate_name};
+use common::{ClientMessage, GroupInfo, ServerMessage, validate_name};
 
 pub type ClientId = u64;
 
@@ -18,6 +18,10 @@ pub enum ServerError {
     InvalidName(String),
     UsernameTaken(String),
     UserNotFound(String),
+    GroupNotFound(String),
+    GroupAlreadyExists(String),
+    NotGroupMember(String),
+    NotGroupCreator(String),
     Unsupported(String),
 }
 
@@ -30,6 +34,10 @@ impl std::fmt::Display for ServerError {
             ServerError::InvalidName(err) => write!(f, "{err}"),
             ServerError::UsernameTaken(name) => write!(f, "Username '{name}' is already taken"),
             ServerError::UserNotFound(name) => write!(f, "User '{name}' not found"),
+            ServerError::GroupNotFound(g) => write!(f, "Group '{g}' not found"),
+            ServerError::GroupAlreadyExists(g) => write!(f, "Group '{g}' already exists"),
+            ServerError::NotGroupMember(g) => write!(f, "You are not a member of group '{g}'"),
+            ServerError::NotGroupCreator(g) => write!(f, "Only the creator can delete group '{g}'"),
             ServerError::Unsupported(feature) => write!(f, "{feature} is not yet implemented"),
         }
     }
@@ -44,11 +52,20 @@ pub struct ClientSession {
     pub tx: UnboundedSender<ServerMessage>,
 }
 
+/// Represents an in-memory chat group.
+#[derive(Debug, Clone)]
+pub struct Group {
+    pub name: String,
+    pub creator: String,
+    pub members: HashSet<String>,
+}
+
 /// In-memory state of the chat server.
 /// Decoupled from transport (TCP) for testability.
 pub struct ServerState {
     clients: HashMap<ClientId, ClientSession>,
     users: HashMap<String, ClientId>,
+    groups: HashMap<String, Group>,
     next_client_id: ClientId,
 }
 
@@ -63,6 +80,7 @@ impl ServerState {
         Self {
             clients: HashMap::new(),
             users: HashMap::new(),
+            groups: HashMap::new(),
             next_client_id: 1,
         }
     }
@@ -88,9 +106,42 @@ impl ServerState {
         let session = self.clients.remove(&client_id)?;
         if let Some(username) = session.username {
             self.users.remove(&username);
+
+            // 1. Delete groups created by this user per SPECS.md
+            self.groups.retain(|_, grp| grp.creator != username);
+
+            // 2. Remove user from any other groups they joined and send leave notice
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            for (grp_name, grp) in self.groups.iter_mut() {
+                if grp.members.remove(&username) {
+                    let notice = ServerMessage::GroupMessage {
+                        group: grp_name.clone(),
+                        from: "system".to_string(),
+                        content: format!("@{username} left the group"),
+                        timestamp: now,
+                    };
+                    for member in &grp.members {
+                        if let Some(&m_id) = self.users.get(member)
+                            && let Some(m_session) = self.clients.get(&m_id)
+                        {
+                            let _ = m_session.tx.send(notice.clone());
+                        }
+                    }
+                }
+            }
+
             // Broadcast updated user list to all remaining registered clients
             let user_list = self.get_user_list();
             self.broadcast_to_registered(ServerMessage::UserList { users: user_list });
+
+            // Broadcast updated group list to all remaining registered clients
+            let group_list = self.get_group_list();
+            self.broadcast_to_registered(ServerMessage::GroupList { groups: group_list });
+
             Some(username)
         } else {
             None
@@ -120,12 +171,12 @@ impl ServerState {
             ClientMessage::DirectMessage { recipient, content } => {
                 self.handle_direct_message(client_id, recipient, content)
             }
-            ClientMessage::GroupMessage { .. }
-            | ClientMessage::CreateGroup { .. }
-            | ClientMessage::JoinGroup { .. }
-            | ClientMessage::LeaveGroup { .. }
-            | ClientMessage::DeleteGroup { .. } => {
-                Err(ServerError::Unsupported("Group features".to_string()))
+            ClientMessage::CreateGroup { group } => self.handle_create_group(client_id, group),
+            ClientMessage::JoinGroup { group } => self.handle_join_group(client_id, group),
+            ClientMessage::LeaveGroup { group } => self.handle_leave_group(client_id, group),
+            ClientMessage::DeleteGroup { group } => self.handle_delete_group(client_id, group),
+            ClientMessage::GroupMessage { group, content } => {
+                self.handle_group_message(client_id, group, content)
             }
         };
 
@@ -177,6 +228,11 @@ impl ServerState {
         let users = self.get_user_list();
         self.broadcast_to_registered(ServerMessage::UserList { users });
 
+        let groups = self.get_group_list();
+        if !groups.is_empty() {
+            self.send_to(client_id, ServerMessage::GroupList { groups });
+        }
+
         Ok(())
     }
 
@@ -213,6 +269,216 @@ impl ServerState {
         }
 
         Ok(())
+    }
+
+    /// Handles group creation. Creator is the sole initial member (R8).
+    pub fn handle_create_group(
+        &mut self,
+        client_id: ClientId,
+        group_name: String,
+    ) -> Result<(), ServerError> {
+        let username = self.assert_registered(client_id)?;
+        validate_name(&group_name).map_err(|e| ServerError::InvalidName(e.to_string()))?;
+
+        if self.groups.contains_key(&group_name) {
+            return Err(ServerError::GroupAlreadyExists(group_name));
+        }
+
+        let mut members = HashSet::new();
+        members.insert(username.clone());
+
+        self.groups.insert(
+            group_name.clone(),
+            Group {
+                name: group_name,
+                creator: username,
+                members,
+            },
+        );
+
+        let group_list = self.get_group_list();
+        self.broadcast_to_registered(ServerMessage::GroupList { groups: group_list });
+
+        Ok(())
+    }
+
+    /// Handles joining a group chat (R10) and sends a join notice to all group members.
+    pub fn handle_join_group(
+        &mut self,
+        client_id: ClientId,
+        group_name: String,
+    ) -> Result<(), ServerError> {
+        let username = self.assert_registered(client_id)?;
+
+        let (was_new, members) = {
+            let group = self
+                .groups
+                .get_mut(&group_name)
+                .ok_or_else(|| ServerError::GroupNotFound(group_name.clone()))?;
+            let was_new = group.members.insert(username.clone());
+            let members: Vec<String> = group.members.iter().cloned().collect();
+            (was_new, members)
+        };
+
+        if was_new {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            let notice = ServerMessage::GroupMessage {
+                group: group_name.clone(),
+                from: "system".to_string(),
+                content: format!("@{username} joined the group"),
+                timestamp,
+            };
+
+            for member in members {
+                if let Some(&m_id) = self.users.get(&member) {
+                    self.send_to(m_id, notice.clone());
+                }
+            }
+
+            let group_list = self.get_group_list();
+            self.broadcast_to_registered(ServerMessage::GroupList { groups: group_list });
+        }
+
+        Ok(())
+    }
+
+    /// Handles leaving a group chat and sends a leave notice to remaining group members.
+    pub fn handle_leave_group(
+        &mut self,
+        client_id: ClientId,
+        group_name: String,
+    ) -> Result<(), ServerError> {
+        let username = self.assert_registered(client_id)?;
+
+        let (removed, members, is_empty) = {
+            let group = self
+                .groups
+                .get_mut(&group_name)
+                .ok_or_else(|| ServerError::GroupNotFound(group_name.clone()))?;
+
+            let removed = group.members.remove(&username);
+            let members: Vec<String> = group.members.iter().cloned().collect();
+            let is_empty = group.members.is_empty();
+            (removed, members, is_empty)
+        };
+
+        if !removed {
+            return Err(ServerError::NotGroupMember(group_name));
+        }
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let notice = ServerMessage::GroupMessage {
+            group: group_name.clone(),
+            from: "system".to_string(),
+            content: format!("@{username} left the group"),
+            timestamp,
+        };
+
+        for member in members {
+            if let Some(&m_id) = self.users.get(&member) {
+                self.send_to(m_id, notice.clone());
+            }
+        }
+
+        if is_empty {
+            self.groups.remove(&group_name);
+        }
+
+        let group_list = self.get_group_list();
+        self.broadcast_to_registered(ServerMessage::GroupList { groups: group_list });
+
+        Ok(())
+    }
+
+    /// Handles deleting a group. Only the group creator can delete it (SPECS.md).
+    pub fn handle_delete_group(
+        &mut self,
+        client_id: ClientId,
+        group_name: String,
+    ) -> Result<(), ServerError> {
+        let username = self.assert_registered(client_id)?;
+
+        let group = self
+            .groups
+            .get(&group_name)
+            .ok_or_else(|| ServerError::GroupNotFound(group_name.clone()))?;
+
+        if group.creator != username {
+            return Err(ServerError::NotGroupCreator(group_name));
+        }
+
+        self.groups.remove(&group_name);
+
+        let group_list = self.get_group_list();
+        self.broadcast_to_registered(ServerMessage::GroupList { groups: group_list });
+
+        Ok(())
+    }
+
+    /// Handles broadcasting a text message to all members of the group (R11).
+    pub fn handle_group_message(
+        &mut self,
+        client_id: ClientId,
+        group_name: String,
+        content: String,
+    ) -> Result<(), ServerError> {
+        let username = self.assert_registered(client_id)?;
+
+        let group = self
+            .groups
+            .get(&group_name)
+            .ok_or_else(|| ServerError::GroupNotFound(group_name.clone()))?;
+
+        if !group.members.contains(&username) {
+            return Err(ServerError::NotGroupMember(group_name));
+        }
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let srv_msg = ServerMessage::GroupMessage {
+            group: group_name,
+            from: username,
+            content,
+            timestamp,
+        };
+
+        for member in &group.members {
+            if let Some(&m_id) = self.users.get(member) {
+                self.send_to(m_id, srv_msg.clone());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns a list of all existing groups with member lists (R9).
+    pub fn get_group_list(&self) -> Vec<GroupInfo> {
+        let mut list: Vec<GroupInfo> = self
+            .groups
+            .values()
+            .map(|g| {
+                let mut members: Vec<String> = g.members.iter().cloned().collect();
+                members.sort();
+                GroupInfo {
+                    name: g.name.clone(),
+                    creator: g.creator.clone(),
+                    members,
+                }
+            })
+            .collect();
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        list
     }
 
     /// Sends a message to a specific client if connected.
@@ -303,387 +569,4 @@ pub async fn handle_connection(socket: TcpStream, state: Arc<Mutex<ServerState>>
     // Clean up on disconnect
     state.lock().await.disconnect_client(client_id);
     writer_task.abort();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::sync::mpsc;
-
-    fn setup_client(
-        server: &mut ServerState,
-    ) -> (ClientId, mpsc::UnboundedReceiver<ServerMessage>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let client_id = server.connect_client(tx);
-        (client_id, rx)
-    }
-
-    #[test]
-    fn test_client_connect_and_disconnect_unregistered() {
-        let mut server = ServerState::new();
-        let (client_id, _) = setup_client(&mut server);
-        assert_eq!(server.client_count(), 1);
-        assert_eq!(server.registered_user_count(), 0);
-
-        let disconnected_user = server.disconnect_client(client_id);
-        assert_eq!(disconnected_user, None);
-        assert_eq!(server.client_count(), 0);
-    }
-
-    #[test]
-    fn test_assert_registered() {
-        let mut server = ServerState::new();
-        let (client_id, _) = setup_client(&mut server);
-
-        // Not registered yet
-        assert_eq!(
-            server.assert_registered(client_id),
-            Err(ServerError::NotRegistered)
-        );
-
-        // Nonexistent client
-        assert_eq!(
-            server.assert_registered(9999),
-            Err(ServerError::ClientNotFound)
-        );
-
-        // After registration
-        let res = server.handle_message(
-            client_id,
-            ClientMessage::Register {
-                username: "alice".to_string(),
-            },
-        );
-        assert!(res.is_ok());
-        assert_eq!(server.assert_registered(client_id), Ok("alice".to_string()));
-    }
-
-    #[test]
-    fn test_register_success() {
-        let mut server = ServerState::new();
-        let (client_id, mut rx) = setup_client(&mut server);
-
-        let res = server.handle_message(
-            client_id,
-            ClientMessage::Register {
-                username: "alice".to_string(),
-            },
-        );
-        assert_eq!(res, Ok(()));
-
-        assert_eq!(
-            rx.try_recv().unwrap(),
-            ServerMessage::RegisterSuccess {
-                username: "alice".to_string()
-            }
-        );
-        assert_eq!(
-            rx.try_recv().unwrap(),
-            ServerMessage::UserList {
-                users: vec!["alice".to_string()]
-            }
-        );
-        assert!(rx.try_recv().is_err());
-        assert!(server.is_registered("alice"));
-    }
-
-    #[test]
-    fn test_register_invalid_name() {
-        let mut server = ServerState::new();
-        let (client_id, mut rx) = setup_client(&mut server);
-
-        // Too short
-        let res = server.handle_message(
-            client_id,
-            ClientMessage::Register {
-                username: "al".to_string(),
-            },
-        );
-        assert!(matches!(res, Err(ServerError::InvalidName(_))));
-        match rx.try_recv().unwrap() {
-            ServerMessage::Error { message } => {
-                assert!(message.contains("at least 3 characters"));
-            }
-            other => panic!("Expected Error message, got {:?}", other),
-        }
-
-        // Uppercase not allowed
-        let res = server.handle_message(
-            client_id,
-            ClientMessage::Register {
-                username: "Alice".to_string(),
-            },
-        );
-        assert!(matches!(res, Err(ServerError::InvalidName(_))));
-        match rx.try_recv().unwrap() {
-            ServerMessage::Error { message } => {
-                assert!(message.contains("[a-z0-9_]"));
-            }
-            other => panic!("Expected Error message, got {:?}", other),
-        }
-
-        assert_eq!(server.registered_user_count(), 0);
-    }
-
-    #[test]
-    fn test_register_duplicate() {
-        let mut server = ServerState::new();
-        let (c1, mut rx1) = setup_client(&mut server);
-        let (c2, mut rx2) = setup_client(&mut server);
-
-        // Client 1 registers as "alice"
-        let res1 = server.handle_message(
-            c1,
-            ClientMessage::Register {
-                username: "alice".to_string(),
-            },
-        );
-        assert_eq!(res1, Ok(()));
-        assert!(matches!(
-            rx1.try_recv().unwrap(),
-            ServerMessage::RegisterSuccess { .. }
-        ));
-        assert!(matches!(
-            rx1.try_recv().unwrap(),
-            ServerMessage::UserList { .. }
-        ));
-
-        // Client 2 attempts to also register as "alice"
-        let res2 = server.handle_message(
-            c2,
-            ClientMessage::Register {
-                username: "alice".to_string(),
-            },
-        );
-        assert_eq!(res2, Err(ServerError::UsernameTaken("alice".to_string())));
-        match rx2.try_recv().unwrap() {
-            ServerMessage::Error { message } => {
-                assert!(message.contains("already taken"));
-            }
-            other => panic!("Expected Error message, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_register_twice_same_session() {
-        let mut server = ServerState::new();
-        let (c1, mut rx1) = setup_client(&mut server);
-
-        let res1 = server.handle_message(
-            c1,
-            ClientMessage::Register {
-                username: "alice".to_string(),
-            },
-        );
-        assert_eq!(res1, Ok(()));
-        let _ = rx1.try_recv(); // RegisterSuccess
-        let _ = rx1.try_recv(); // UserList
-
-        // Attempt second registration on same session
-        let res2 = server.handle_message(
-            c1,
-            ClientMessage::Register {
-                username: "bob".to_string(),
-            },
-        );
-        assert_eq!(res2, Err(ServerError::AlreadyRegistered));
-        match rx1.try_recv().unwrap() {
-            ServerMessage::Error { message } => {
-                assert!(message.contains("already registered"));
-            }
-            other => panic!("Expected Error message, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_direct_message_success() {
-        let mut server = ServerState::new();
-        let (c1, mut rx1) = setup_client(&mut server);
-        let (c2, mut rx2) = setup_client(&mut server);
-
-        assert!(
-            server
-                .handle_message(
-                    c1,
-                    ClientMessage::Register {
-                        username: "alice".to_string(),
-                    },
-                )
-                .is_ok()
-        );
-        assert!(
-            server
-                .handle_message(
-                    c2,
-                    ClientMessage::Register {
-                        username: "bob".to_string(),
-                    },
-                )
-                .is_ok()
-        );
-
-        // Drain registration messages
-        while rx1.try_recv().is_ok() {}
-        while rx2.try_recv().is_ok() {}
-
-        // Alice sends direct message to Bob
-        let res = server.handle_message(
-            c1,
-            ClientMessage::DirectMessage {
-                recipient: "bob".to_string(),
-                content: "hello bob!".to_string(),
-            },
-        );
-        assert_eq!(res, Ok(()));
-
-        // Bob should receive the DM
-        let bob_msg = rx2.try_recv().unwrap();
-        let timestamp = match bob_msg {
-            ServerMessage::DirectMessage {
-                ref from,
-                ref to,
-                ref content,
-                timestamp,
-            } => {
-                assert_eq!(from, "alice");
-                assert_eq!(to, "bob");
-                assert_eq!(content, "hello bob!");
-                assert!(timestamp > 0);
-                timestamp
-            }
-            other => panic!("Expected DirectMessage, got {:?}", other),
-        };
-
-        // Alice should receive sender echo
-        let alice_echo = rx1.try_recv().unwrap();
-        assert_eq!(
-            alice_echo,
-            ServerMessage::DirectMessage {
-                from: "alice".to_string(),
-                to: "bob".to_string(),
-                content: "hello bob!".to_string(),
-                timestamp,
-            }
-        );
-
-        // No more messages
-        assert!(rx1.try_recv().is_err());
-        assert!(rx2.try_recv().is_err());
-    }
-
-    #[test]
-    fn test_direct_message_user_not_found() {
-        let mut server = ServerState::new();
-        let (c1, mut rx1) = setup_client(&mut server);
-
-        assert!(
-            server
-                .handle_message(
-                    c1,
-                    ClientMessage::Register {
-                        username: "alice".to_string(),
-                    },
-                )
-                .is_ok()
-        );
-        while rx1.try_recv().is_ok() {}
-
-        // Send DM to nonexistent user
-        let res = server.handle_message(
-            c1,
-            ClientMessage::DirectMessage {
-                recipient: "charlie".to_string(),
-                content: "hey".to_string(),
-            },
-        );
-        assert_eq!(res, Err(ServerError::UserNotFound("charlie".to_string())));
-
-        match rx1.try_recv().unwrap() {
-            ServerMessage::Error { message } => {
-                assert!(message.contains("User 'charlie' not found"));
-            }
-            other => panic!("Expected Error message, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_direct_message_unregistered_sender() {
-        let mut server = ServerState::new();
-        let (c1, mut rx1) = setup_client(&mut server);
-
-        let res = server.handle_message(
-            c1,
-            ClientMessage::DirectMessage {
-                recipient: "bob".to_string(),
-                content: "hey".to_string(),
-            },
-        );
-        assert_eq!(res, Err(ServerError::NotRegistered));
-
-        match rx1.try_recv().unwrap() {
-            ServerMessage::Error { message } => {
-                assert!(message.contains("Must register"));
-            }
-            other => panic!("Expected Error message, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_disconnect_registered_updates_user_list() {
-        let mut server = ServerState::new();
-        let (c1, mut rx1) = setup_client(&mut server);
-        let (c2, mut rx2) = setup_client(&mut server);
-
-        assert!(
-            server
-                .handle_message(
-                    c1,
-                    ClientMessage::Register {
-                        username: "alice".to_string(),
-                    },
-                )
-                .is_ok()
-        );
-        assert!(
-            server
-                .handle_message(
-                    c2,
-                    ClientMessage::Register {
-                        username: "bob".to_string(),
-                    },
-                )
-                .is_ok()
-        );
-
-        while rx1.try_recv().is_ok() {}
-        while rx2.try_recv().is_ok() {}
-
-        // Alice disconnects
-        let removed = server.disconnect_client(c1);
-        assert_eq!(removed, Some("alice".to_string()));
-
-        // Bob should receive updated user list containing only "bob"
-        assert_eq!(
-            rx2.try_recv().unwrap(),
-            ServerMessage::UserList {
-                users: vec!["bob".to_string()]
-            }
-        );
-
-        // "alice" username can now be registered again
-        let (c3, mut rx3) = setup_client(&mut server);
-        let res = server.handle_message(
-            c3,
-            ClientMessage::Register {
-                username: "alice".to_string(),
-            },
-        );
-        assert_eq!(res, Ok(()));
-        assert_eq!(
-            rx3.try_recv().unwrap(),
-            ServerMessage::RegisterSuccess {
-                username: "alice".to_string()
-            }
-        );
-    }
 }

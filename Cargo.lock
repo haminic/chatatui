@@ -94,7 +94,6 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
- "server",
  "tokio",
  "tokio-stream",
 ]

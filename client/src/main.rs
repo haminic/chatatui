@@ -11,7 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 
-use client::app::{ActivePanel, App, ConnectField, Screen};
+use client::app::{ActivePanel, App, ConnectField, Modal, Screen};
 use client::network::{spawn_network_worker, NetworkEvent};
 use client::ui;
 use common::ClientMessage;
@@ -161,9 +161,72 @@ async fn run_app(
                             }
                         }
                         Screen::Chat => {
-                            match app.active_panel {
-                                ActivePanel::Users => {
-                                    match key.code {
+                            if let Some(mut modal) = app.modal.take() {
+                                let mut close_modal = false;
+                                match &mut modal {
+                                    Modal::CreateGroup { input, error } => match key.code {
+                                        KeyCode::Char(c)
+                                            if c.is_ascii_alphanumeric() || c == '_' =>
+                                        {
+                                            input.push(c);
+                                            *error = None;
+                                        }
+                                        KeyCode::Backspace => {
+                                            input.pop();
+                                            *error = None;
+                                        }
+                                        KeyCode::Enter => {
+                                            if let Err(e) = common::validate_name(input) {
+                                                *error = Some(e.to_string());
+                                            } else {
+                                                let name = input.clone();
+                                                close_modal = true;
+                                                let _ = outbound_tx
+                                                    .send(ClientMessage::CreateGroup { group: name });
+                                            }
+                                        }
+                                        KeyCode::Esc => {
+                                            close_modal = true;
+                                        }
+                                        _ => {}
+                                    },
+                                    Modal::ConfirmLeaveGroup { group_name } => match key.code {
+                                        KeyCode::Char('y') | KeyCode::Enter => {
+                                            let name = group_name.clone();
+                                            close_modal = true;
+                                            let _ = outbound_tx
+                                                .send(ClientMessage::LeaveGroup { group: name });
+                                        }
+                                        KeyCode::Char('n') | KeyCode::Esc => {
+                                            close_modal = true;
+                                        }
+                                        _ => {}
+                                    },
+                                    Modal::ConfirmDeleteGroup { group_name } => match key.code {
+                                        KeyCode::Char('y') | KeyCode::Enter => {
+                                            let name = group_name.clone();
+                                            close_modal = true;
+                                            let _ = outbound_tx
+                                                .send(ClientMessage::DeleteGroup { group: name });
+                                        }
+                                        KeyCode::Char('n') | KeyCode::Esc => {
+                                            close_modal = true;
+                                        }
+                                        _ => {}
+                                    },
+                                    Modal::ViewMembers { .. } => match key.code {
+                                        KeyCode::Esc | KeyCode::Enter => {
+                                            close_modal = true;
+                                        }
+                                        _ => {}
+                                    },
+                                }
+                                if !close_modal {
+                                    app.modal = Some(modal);
+                                }
+                            } else {
+                                match app.active_panel {
+                                    ActivePanel::Users => match key.code {
                                         KeyCode::Char('j') | KeyCode::Down => {
                                             app.select_next_user();
                                         }
@@ -174,16 +237,87 @@ async fn run_app(
                                             app.open_selected_chat();
                                         }
                                         KeyCode::Tab => {
-                                            app.focus_chat();
+                                            app.active_panel = ActivePanel::Groups;
+                                        }
+                                        KeyCode::Char('c') => {
+                                            app.modal = Some(Modal::CreateGroup {
+                                                input: String::new(),
+                                                error: None,
+                                            });
                                         }
                                         KeyCode::Char('q') | KeyCode::Esc => {
                                             break;
                                         }
                                         _ => {}
-                                    }
-                                }
-                                ActivePanel::Input => {
-                                    match key.code {
+                                    },
+                                    ActivePanel::Groups => match key.code {
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            app.select_next_group();
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            app.select_prev_group();
+                                        }
+                                        KeyCode::Enter => {
+                                            if let Some(grp) = app.highlighted_group() {
+                                                if grp.members.contains(&app.my_username) {
+                                                    app.open_selected_group_chat();
+                                                } else {
+                                                    let _ = outbound_tx.send(
+                                                        ClientMessage::JoinGroup {
+                                                            group: grp.name,
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Tab => {
+                                            if app.active_chat().is_some() {
+                                                app.active_panel = ActivePanel::Input;
+                                            } else {
+                                                app.active_panel = ActivePanel::Users;
+                                            }
+                                        }
+                                        KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+                                            app.active_panel = ActivePanel::Users;
+                                        }
+                                        KeyCode::Char('c') => {
+                                            app.modal = Some(Modal::CreateGroup {
+                                                input: String::new(),
+                                                error: None,
+                                            });
+                                        }
+                                        KeyCode::Char('l') => {
+                                            if let Some(grp) = app.highlighted_group()
+                                                && grp.members.contains(&app.my_username)
+                                            {
+                                                app.modal = Some(Modal::ConfirmLeaveGroup {
+                                                    group_name: grp.name,
+                                                });
+                                            }
+                                        }
+                                        KeyCode::Char('d') => {
+                                            if let Some(grp) = app.highlighted_group()
+                                                && grp.creator == app.my_username
+                                            {
+                                                app.modal = Some(Modal::ConfirmDeleteGroup {
+                                                    group_name: grp.name,
+                                                });
+                                            }
+                                        }
+                                        KeyCode::Char('m') | KeyCode::Char('v') => {
+                                            if let Some(grp) = app.highlighted_group() {
+                                                app.modal = Some(Modal::ViewMembers {
+                                                    group_name: grp.name,
+                                                    members: grp.members,
+                                                });
+                                            }
+                                        }
+                                        KeyCode::Char('q') | KeyCode::Esc => {
+                                            break;
+                                        }
+                                        _ => {}
+                                    },
+                                    ActivePanel::Input => match key.code {
                                         KeyCode::Enter => {
                                             if let Some(msg) = app.send_current_message() {
                                                 let _ = outbound_tx.send(msg);
@@ -192,17 +326,28 @@ async fn run_app(
                                         KeyCode::Backspace => {
                                             app.input_message.pop();
                                         }
-                                        KeyCode::Esc | KeyCode::Tab => {
+                                        KeyCode::Esc => {
+                                            if app.active_chat_group.is_some() {
+                                                app.active_panel = ActivePanel::Groups;
+                                            } else {
+                                                app.active_panel = ActivePanel::Users;
+                                            }
+                                        }
+                                        KeyCode::Tab => {
                                             app.active_panel = ActivePanel::Users;
                                         }
                                         KeyCode::Left if app.input_message.is_empty() => {
-                                            app.active_panel = ActivePanel::Users;
+                                            if app.active_chat_group.is_some() {
+                                                app.active_panel = ActivePanel::Groups;
+                                            } else {
+                                                app.active_panel = ActivePanel::Users;
+                                            }
                                         }
                                         KeyCode::Char(c) => {
                                             app.input_message.push(c);
                                         }
                                         _ => {}
-                                    }
+                                    },
                                 }
                             }
                         }
