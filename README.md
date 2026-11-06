@@ -50,17 +50,18 @@ This project is built strictly according to the course **Term Project: Socket Pr
 | **R5** | 0.5 | **Dedicated Chat Rooms**<br>Each chat between clients (both Private and Group message) must have its own isolated chat room. | Completed<br>`[x]` | Separate conversation state and isolated chat history maps (`chat_histories`) for every 1-on-1 peer and group room. |
 | **R6** | 0.5 | **Chat Box & Chat Window**<br>Each chat room must include a chat box for sending text messages and a chat window displaying sent and incoming messages. | Completed<br>`[x]` | Right panel features a dedicated message viewport with auto-scroll and formatted timestamps, plus a bottom text input box. |
 | **R7** | 1.0 | **Private Direct Messaging**<br>Direct text message to any client in the list. Only sender and receiver can see the messages. | Completed<br>`[x]` | Direct message routing routed strictly by `ClientId` to target recipient with sender echo confirmation. Peers cannot intercept. Self-DM is safely disabled. |
-| **R8** | 1.0 | **Group Creation**<br>Each client can create chat group(s), initially including only themselves as a member. | Completed<br>`[x]` | Modal group creation (`c` key). The server initializes the group with the creator as the sole initial member. |
+| **R8** | 1.0 | **Group Creation**<br>Each client can create chat group(s), initially including only themselves as a member. | Completed<br>`[x]` | Modal group creation (`n` key or `Ctrl+N`). Instant client-side duplicate name check and server-side duplicate rejection. The server initializes the group with the creator as the sole initial member. |
 | **R9** | 1.0 | **Group List & Member Inspection**<br>Each client can see a list of all existing chat groups created by any client, with member lists. | Completed<br>`[x]` | Real-time `GroupList` sync displays all groups categorized by Created/Joined/Public with live member counts. Pressing `m` opens the member list popup. |
 | **R10** | 1.0 | **Voluntary Group Joining**<br>Clients choose to join a group chat only by themselves; they are not automatically added by the creator. | Completed<br>`[x]` | Clients select any public group and press `Enter` to join voluntarily. Group creator cannot force users into groups. |
 | **R11** | 1.0 | **Group Broadcast Messaging**<br>Send text messages to joined groups. Only members of the chat group can see the messages. | Completed<br>`[x]` | Server verifies group membership prior to routing `GroupMessage`. Non-members cannot send or receive group messages. |
 
 ### Part 3: Special Points (4.0 pts)
-> *Note: At least one feature must be an AI feature.*
-- [ ] **AI Assistant / Chatbot Integration (AI Feature)** — Planned integration with an AI service for automated responses, conversation summaries, or sentiment analysis.
-- [ ] **Password-Protected Private Groups** — Optional password authentication for private room entry.
-- [ ] **Cloud-Based Deployment** — Deploying the server binary to a cloud provider (e.g., Fly.io, AWS EC2, or DigitalOcean) with public IP/domain.
-- [ ] **@Mention Notifications** — Visual alert badge and sound/highlighting when a user's `@name` is mentioned in group chats.
+| Req | Points | Description | Status | Implementation Details |
+|:---:|:---:|:---|:---:|:---|
+| **S1** | - | **Password-Protected Private Groups**<br>Optional password authentication for private room entry. | Completed<br>`[x]` | Multi-field group creation modal with optional password. Protected groups are indicated by `🔒` prefix and `[private]` tag. Joining prompts with password modal and verifies credentials against in-memory server state. |
+| **S2** | - | **@Mention Notifications**<br>Visual alert badge and sound/highlighting when a user's `@name` is mentioned in group chats. | Completed<br>`[x]` | Floating `@mention` username recommendations above input with Tab/Enter completion and Esc dismiss. Priority unread notifications: bright `[@]` badge for mentions (higher priority) and cyan `●` dot for regular unread messages; in-chat `[MENTION]` tag, bold yellow text highlight, and terminal audio bell (`\x07`). |
+| **S3** | - | **AI Assistant / Chatbot Integration (AI Feature)**<br>Integration with an AI service for automated responses or conversation summaries. | Planned<br>`[ ]` | Planned integration. |
+| **S4** | - | **Cloud-Based Deployment**<br>Deploying the server binary to a cloud provider with public IP/domain. | Planned<br>`[ ]` | Planned deployment. |
 
 ---
 
@@ -127,24 +128,29 @@ This project is built strictly according to the course **Term Project: Socket Pr
 * **Screen 2: Multi-Panel Chat Dashboard**
   * **Top Header:** Displays application branding and current user badge (`@username`).
   * **Left Panel (Contacts & Groups):**
-    * **Connected Users:** Displays all online users. Your own name is pinned at the top with `(you)` styling. Active conversation indicator (`●`). Self-DM is safely disabled.
+    * **Connected Users:** Displays all online users. Your own name is pinned at the top with `(you)` styling. Active conversation indicator (`●`). Unread message indicator (`●` in cyan). Self-DM is safely disabled.
     * **Hierarchical Group Directory:** Groups are organized into:
       1. Groups you created (`[created]`)
       2. Groups you joined (`[joined]`)
-      3. Other available groups (`[public]` or `[Enter to join]`)
+      3. Other available groups (`[public]`, `[private]`, or `[Enter to join]`)
     * Dynamic group member counts displayed in real time: `#group [role] (count)`.
+    * **Password Protection Indicators:** Locked groups display a `🔒` prefix and `[private]` tag.
+    * **Priority Unread & @Mention Badges:** Groups with regular unread messages display a cyan `●` badge; groups with `@mention` notifications display a bright yellow `[@]` badge which takes **higher priority**.
   * **Right Panel (Conversation & Messaging):**
     * **Chat History Window:** Isolated message history per room (DM or Group).
     * **Formatted Timestamps:** Messages display 12-hour local timestamps (`02:30 PM`) placed neatly before the username.
     * **Message Status Badges:** Pending messages display `⏳` until server delivery acknowledgment.
+    * **@Mention Highlighting & Audio:** Mentioned messages show a `[MENTION]` badge, render the mentioned username in bold underlined yellow, and ring the terminal audio bell (`\x07`).
+    * **Floating @Mention Recommendations:** Typing `@` in the input box opens an autocomplete popup listing candidate group members (or online users in DM). Navigate with `↑`/`↓`, press `Tab` or `Enter` to autocomplete, or press `Esc` to dismiss.
     * **System Announcements:** Join/leave announcements (`* @alice joined the group *`) highlighted in italic center text.
     * **Auto-Scrolling:** Automatically scrolls to the latest incoming messages.
     * **Message Input Box:** Live editing with prompt, cursor indicator, and Enter to send.
 * **Interactive Dialogs & Modals:**
-  * **Create Group Modal (`c`):** Prompt to enter group name with instant validation.
-  * **Leave Group Modal (`l`):** Confirmation dialog (`[y/n]`). Automatically cleans up room state, wipes chat history, and resets view to no active conversation.
-  * **Delete Group Modal (`d`):** Protected action only accessible by the group creator.
-  * **View Members Modal (`m` or `v`):** Scrollable popup displaying all members currently in the highlighted group.
+  * **Create Group Modal (`n` / `Ctrl+N`):** Multi-field dialog for Group Name and optional Password with `Tab`/`↑`/`↓` field switching. Includes instant client-side duplicate name check and inline error reporting.
+  * **Enter Group Password Modal:** Modal displayed when joining a protected group with inline server verification and error feedback.
+  * **Leave Group Modal (`l` / `Ctrl+L` / `/leave`):** Confirmation dialog (`[y/n]`). Automatically cleans up room state, wipes chat history, and resets view to no active conversation.
+  * **Delete Group Modal (`d` / `Ctrl+D` / `/delete`):** Protected action only accessible by the group creator.
+  * **View Members Modal (`m` / `v` / `Ctrl+M` / `/members`):** Scrollable popup displaying all members currently in the highlighted group.
 * **Context-Aware Dynamic Action Bar:**
   * The bottom footer dynamically displays only valid hotkeys based on whether the user is in the Users list, Groups list (with different keys for creator vs member vs visitor), or Chat input.
   * Non-destructive navigation: Pressing `Esc` in the input box returns to the side panel rather than closing the program.
@@ -152,6 +158,7 @@ This project is built strictly according to the course **Term Project: Socket Pr
 ### Server Engine (Tokio)
 * **High-Concurrency Socket Handling:** Decoupled in-memory server state protected by `Arc<Mutex<ServerState>>`.
 * **Strict Unique Identity Enforcement:** Rejects duplicate usernames and keeps track of disconnected usernames to prevent impersonation during session lifetime.
+* **Password-Protected Group Security:** Server maintains optional group passwords in memory and rejects join attempts with missing or invalid credentials.
 * **Direct Message Routing:** Routes messages strictly between sender and receiver. Non-participants never receive direct message frames.
 * **Group Chat Management:**
   * Group creation with creator as sole initial member.
@@ -296,7 +303,7 @@ To satisfy requirement **R1** (running at least two clients on different physica
 | | `k` / `↑` | Navigate to previous user |
 | | `Enter` / `l` / `→` | Open direct message chat with selected user |
 | | `Tab` | Switch focus to Groups Panel |
-| | `c` | Open Create Group dialog |
+| | `n` (or `c`) | Open Create Group dialog |
 | | `q` / `Ctrl + C` | Quit application |
 | **Groups Panel** | `j` / `↓` | Navigate to next group |
 | | `k` / `↑` | Navigate to previous group |
@@ -304,13 +311,31 @@ To satisfy requirement **R1** (running at least two clients on different physica
 | | `m` / `v` | View member list of highlighted group |
 | | `l` | Leave group (members only; opens confirmation) |
 | | `d` | Delete group (creator only; opens confirmation) |
-| | `c` | Open Create Group dialog |
+| | `n` (or `c`) | Open Create Group dialog |
 | | `Tab` | Focus Chat Input (if chat is open) or Users Panel |
 | | `h` / `←` / `BackTab` | Return focus to Users Panel |
-| **Chat Input** | `Typing` | Type chat message |
-| | `Enter` | Send message to active conversation |
+| **Chat Input (Focus Chat)** | `Typing` | Type chat message |
+| | `@` | Trigger username mention recommendations popup |
+| | `↑` / `↓` | Navigate autocomplete suggestions (when popup active) |
+| | `Tab` / `Enter` | Complete selected username (when popup active) |
+| | `Esc` | Dismiss autocomplete popup (when active) / Exit input to sidebar |
+| | `Enter` | Send message (or execute slash command) |
 | | `Backspace` | Delete last character |
-| | `Esc` | Unfocus input and return to Users / Groups Panel |
+| | `Ctrl + L` | Leave active group (opens confirmation) |
+| | `Ctrl + D` | Delete active group (creator only; opens confirmation) |
+| | `Ctrl + M` / `Ctrl + V` | View members of active group |
+| | `Ctrl + N` / `Ctrl + G` | Open Create Group dialog |
+| | `/leave` | Slash command to leave active group |
+| | `/delete` | Slash command to delete active group |
+| | `/members` / `/who` | Slash command to view group members |
+| | `/create [name]` | Slash command to open Create Group dialog |
+| | `/help` | List available slash commands |
 | | `Tab` | Switch focus to Users Panel |
-| **Modal Dialogs** | `y` / `Enter` | Confirm action (Create / Leave / Delete) |
+| **Create Group Modal** | `Tab` / `↑` / `↓` | Switch between Group Name and Password fields |
+| | `Enter` | Create group |
+| | `Esc` | Cancel modal |
+| **Password Join Modal** | `Typing` | Enter group password |
+| | `Enter` | Submit password and join |
+| | `Esc` | Cancel modal |
+| **Confirmation Modals** | `y` / `Enter` | Confirm action (Leave / Delete) |
 | | `n` / `Esc` | Cancel modal and return to chat |
