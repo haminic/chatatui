@@ -140,7 +140,7 @@ fn render_connect_screen(frame: &mut Frame, app: &App) {
             Span::raw("Switch Field   "),
             Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
             Span::raw("Connect   "),
-            Span::styled("[Esc/Ctrl+C] ", Style::default().fg(Color::Cyan)),
+            Span::styled("[Ctrl+C] ", Style::default().fg(Color::Cyan)),
             Span::raw("Quit"),
         ]),
         Line::from(vec![Span::styled(

@@ -154,9 +154,6 @@ async fn run_app(
                                         }
                                     }
                                 }
-                                KeyCode::Esc => {
-                                    break;
-                                }
                                 _ => {}
                             }
                         }
@@ -246,7 +243,7 @@ async fn run_app(
                                                 error: None,
                                             });
                                         }
-                                        KeyCode::Char('q') | KeyCode::Esc => {
+                                        KeyCode::Char('q') => {
                                             break;
                                         }
                                         _ => {}
@@ -316,7 +313,7 @@ async fn run_app(
                                                 });
                                             }
                                         }
-                                        KeyCode::Char('q') | KeyCode::Esc => {
+                                        KeyCode::Char('q') => {
                                             break;
                                         }
                                         _ => {}
