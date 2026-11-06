@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use common::{validate_name, ClientMessage, GroupInfo, ServerMessage};
 
@@ -9,6 +9,7 @@ pub struct ChatMessage {
     pub is_me: bool,
     pub is_pending: bool,
     pub timestamp: Option<u64>,
+    pub is_mention: bool,
 }
 
 impl ChatMessage {
@@ -100,6 +101,34 @@ pub struct App {
     pub chat_histories: HashMap<String, Vec<ChatMessage>>,
     pub input_message: String,
     pub status_message: Option<String>,
+
+    /// Unread indicators for chats
+    pub unread_messages: HashSet<String>,
+    pub unread_mentions: HashSet<String>,
+
+    /// Autocomplete state for @mentions
+    pub autocomplete_active: bool,
+    pub autocomplete_dismissed: bool,
+    pub autocomplete_candidates: Vec<String>,
+    pub autocomplete_selected: usize,
+}
+
+/// Returns whether the message content mentions the given username with '@<username>'.
+pub fn is_mentioned(content: &str, username: &str) -> bool {
+    if username.is_empty() {
+        return false;
+    }
+    let target = format!("@{username}");
+    let mut rest = content;
+    while let Some(pos) = rest.find(&target) {
+        let after = &rest[pos + target.len()..];
+        let is_word_end = after.chars().next().map_or(true, |c| !c.is_alphanumeric() && c != '_');
+        if is_word_end {
+            return true;
+        }
+        rest = after;
+    }
+    false
 }
 
 impl Default for App {
@@ -132,6 +161,14 @@ impl App {
             chat_histories: HashMap::new(),
             input_message: String::new(),
             status_message: None,
+
+            unread_messages: HashSet::new(),
+            unread_mentions: HashSet::new(),
+
+            autocomplete_active: false,
+            autocomplete_dismissed: false,
+            autocomplete_candidates: Vec::new(),
+            autocomplete_selected: 0,
         }
     }
 
@@ -257,6 +294,7 @@ impl App {
                 self.status_message = Some("Cannot DM yourself".to_string());
                 return;
             }
+            self.unread_messages.remove(&user);
             self.active_chat_user = Some(user);
             self.active_chat_group = None;
             self.active_panel = ActivePanel::Input;
@@ -267,6 +305,8 @@ impl App {
     pub fn open_selected_group_chat(&mut self) {
         if let Some(grp) = self.highlighted_group() {
             if grp.members.contains(&self.my_username) {
+                self.unread_mentions.remove(&grp.name);
+                self.unread_messages.remove(&grp.name);
                 self.active_chat_group = Some(grp.name);
                 self.active_chat_user = None;
                 self.active_panel = ActivePanel::Input;
@@ -283,6 +323,8 @@ impl App {
                 grp.members.push(self.my_username.clone());
             }
         }
+        self.unread_mentions.remove(group_name);
+        self.unread_messages.remove(group_name);
         self.active_chat_group = Some(group_name.to_string());
         self.active_chat_user = None;
         self.active_panel = ActivePanel::Input;
@@ -323,6 +365,110 @@ impl App {
         } else {
             &[]
         }
+    }
+
+    /// Updates autocomplete state based on current input_message.
+    pub fn update_autocomplete(&mut self) {
+        if self.autocomplete_dismissed {
+            return;
+        }
+
+        // Find the last '@'
+        if let Some(at_idx) = self.input_message.rfind('@') {
+            // Check that preceding char is start of string or whitespace
+            let is_at_start = at_idx == 0
+                || self.input_message[..at_idx]
+                    .chars()
+                    .last()
+                    .map_or(false, |c| c.is_whitespace());
+
+            if is_at_start {
+                let query = &self.input_message[at_idx + 1..];
+                // Autocomplete only if query doesn't contain spaces
+                if !query.contains(char::is_whitespace) {
+                    let mut candidates: Vec<String> = Vec::new();
+
+                    // If active group, suggest group members first, else all users
+                    if let Some(ref grp_name) = self.active_chat_group {
+                        if let Some(grp) = self.groups.iter().find(|g| &g.name == grp_name) {
+                            for member in &grp.members {
+                                if member != &self.my_username
+                                    && member.to_lowercase().starts_with(&query.to_lowercase())
+                                {
+                                    candidates.push(member.clone());
+                                }
+                            }
+                        }
+                    } else {
+                        for user in &self.users {
+                            if user != &self.my_username
+                                && user.to_lowercase().starts_with(&query.to_lowercase())
+                            {
+                                candidates.push(user.clone());
+                            }
+                        }
+                    }
+
+                    if !candidates.is_empty() {
+                        candidates.sort();
+                        self.autocomplete_candidates = candidates;
+                        self.autocomplete_active = true;
+                        self.autocomplete_selected = 0;
+                        return;
+                    }
+                }
+            }
+        }
+
+        self.autocomplete_active = false;
+        self.autocomplete_candidates.clear();
+        self.autocomplete_selected = 0;
+    }
+
+    /// Selects the next autocomplete candidate.
+    pub fn autocomplete_next(&mut self) {
+        if !self.autocomplete_candidates.is_empty() {
+            self.autocomplete_selected =
+                (self.autocomplete_selected + 1) % self.autocomplete_candidates.len();
+        }
+    }
+
+    /// Selects the previous autocomplete candidate.
+    pub fn autocomplete_prev(&mut self) {
+        if !self.autocomplete_candidates.is_empty() {
+            self.autocomplete_selected = (self.autocomplete_selected
+                + self.autocomplete_candidates.len()
+                - 1)
+                % self.autocomplete_candidates.len();
+        }
+    }
+
+    /// Applies the currently selected candidate and closes autocomplete.
+    pub fn apply_autocomplete(&mut self) -> bool {
+        if !self.autocomplete_active || self.autocomplete_candidates.is_empty() {
+            return false;
+        }
+
+        if let Some(at_idx) = self.input_message.rfind('@') {
+            let selected_user = self.autocomplete_candidates[self.autocomplete_selected].clone();
+            self.input_message.truncate(at_idx);
+            self.input_message.push('@');
+            self.input_message.push_str(&selected_user);
+            self.input_message.push(' ');
+            self.autocomplete_active = false;
+            self.autocomplete_dismissed = true;
+            self.autocomplete_candidates.clear();
+            self.autocomplete_selected = 0;
+            return true;
+        }
+
+        false
+    }
+
+    /// Dismisses autocomplete popup without modifying text.
+    pub fn dismiss_autocomplete(&mut self) {
+        self.autocomplete_active = false;
+        self.autocomplete_dismissed = true;
     }
 
     /// Processes an incoming message from the server.
@@ -375,10 +521,14 @@ impl App {
                             is_me: true,
                             is_pending: false,
                             timestamp: Some(timestamp),
+                            is_mention: false,
                         });
                     }
                 } else if to == self.my_username {
                     // Incoming message from `from`
+                    if self.active_chat_user.as_deref() != Some(&from) {
+                        self.unread_messages.insert(from.clone());
+                    }
                     self.chat_histories
                         .entry(from.clone())
                         .or_default()
@@ -388,6 +538,7 @@ impl App {
                             is_me: false,
                             is_pending: false,
                             timestamp: Some(timestamp),
+                            is_mention: false,
                         });
                 }
             }
@@ -399,6 +550,7 @@ impl App {
             } => {
                 let key = Self::group_history_key(&group);
                 let history = self.chat_histories.entry(key).or_default();
+                let mentions_me = is_mentioned(&content, &self.my_username);
 
                 if from == self.my_username {
                     // Sender echo for a group message we sent
@@ -415,15 +567,30 @@ impl App {
                             is_me: true,
                             is_pending: false,
                             timestamp: Some(timestamp),
+                            is_mention: false,
                         });
                     }
                 } else {
+                    let is_current_group = self.active_chat_group.as_deref() == Some(&group);
+                    if mentions_me {
+                        // Ring terminal bell
+                        print!("\x07");
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                        self.status_message = Some(format!("Mentioned by @{from} in #{group}"));
+                        if !is_current_group {
+                            self.unread_mentions.insert(group.clone());
+                        }
+                    } else if !is_current_group {
+                        self.unread_messages.insert(group.clone());
+                    }
+
                     history.push(ChatMessage {
                         sender: from,
                         content,
                         is_me: false,
                         is_pending: false,
                         timestamp: Some(timestamp),
+                        is_mention: mentions_me,
                     });
                 }
             }
@@ -436,6 +603,8 @@ impl App {
     pub fn leave_group_cleanup(&mut self, group_name: &str) {
         self.chat_histories
             .remove(&Self::group_history_key(group_name));
+        self.unread_mentions.remove(group_name);
+        self.unread_messages.remove(group_name);
         if self.active_chat_group.as_deref() == Some(group_name) {
             self.active_chat_group = None;
             self.active_panel = ActivePanel::Groups;
@@ -540,6 +709,7 @@ impl App {
         // Wipe chat history for disconnected users per SPECS.md
         for disconnected in &disconnected_users {
             self.chat_histories.remove(disconnected);
+            self.unread_messages.remove(disconnected);
         }
 
         // If active chat partner disconnected, close active chat and notify
@@ -588,6 +758,10 @@ impl App {
             return None;
         }
 
+        self.autocomplete_active = false;
+        self.autocomplete_candidates.clear();
+        self.autocomplete_selected = 0;
+
         if let Some(ref group) = self.active_chat_group {
             let key = Self::group_history_key(group);
             self.chat_histories
@@ -599,6 +773,7 @@ impl App {
                     is_me: true,
                     is_pending: true,
                     timestamp: None,
+                    is_mention: false,
                 });
 
             let grp_name = group.clone();
@@ -617,6 +792,7 @@ impl App {
                     is_me: true,
                     is_pending: true,
                     timestamp: None,
+                    is_mention: false,
                 });
 
             let rec = recipient.clone();
@@ -691,6 +867,7 @@ mod tests {
                 is_me: true,
                 is_pending: false,
                 timestamp: Some(1700000000),
+                is_mention: false,
             }],
         );
 
@@ -755,5 +932,99 @@ mod tests {
         assert_eq!(app.active_chat_group, Some("group_by_two".to_string()));
         assert_eq!(app.active_panel, ActivePanel::Input);
         assert!(app.groups[0].members.contains(&"alice".to_string()));
+    }
+
+    #[test]
+    fn test_is_mentioned() {
+        assert!(is_mentioned("hey @alice how are you?", "alice"));
+        assert!(is_mentioned("@alice!", "alice"));
+        assert!(is_mentioned("hello @alice_smith and @alice", "alice"));
+        // Does not match longer username
+        assert!(!is_mentioned("hello @alice_smith", "alice"));
+        // Does not match non-mention
+        assert!(!is_mentioned("alice without at", "alice"));
+        // Empty username
+        assert!(!is_mentioned("hey @alice", ""));
+    }
+
+    #[test]
+    fn test_autocomplete_flow() {
+        let mut app = App::new();
+        app.my_username = "alice".to_string();
+        app.groups = vec![GroupInfo {
+            name: "rust".to_string(),
+            creator: "bob".to_string(),
+            members: vec!["alice".to_string(), "bob".to_string(), "bobby".to_string(), "charlie".to_string()],
+            is_protected: false,
+        }];
+        app.active_chat_group = Some("rust".to_string());
+
+        // Type '@'
+        app.input_message = "hello @".to_string();
+        app.update_autocomplete();
+        assert!(app.autocomplete_active);
+        // Excludes 'alice' (me)
+        assert_eq!(app.autocomplete_candidates, vec!["bob", "bobby", "charlie"]);
+
+        // Type 'b'
+        app.input_message = "hello @b".to_string();
+        app.update_autocomplete();
+        assert!(app.autocomplete_active);
+        assert_eq!(app.autocomplete_candidates, vec!["bob", "bobby"]);
+
+        // Navigate
+        app.autocomplete_next();
+        assert_eq!(app.autocomplete_selected, 1);
+
+        // Apply autocomplete (selects 'bobby')
+        assert!(app.apply_autocomplete());
+        assert_eq!(app.input_message, "hello @bobby ");
+        assert!(!app.autocomplete_active);
+
+        // Dismiss flow: typing '@' then dismissing
+        app.autocomplete_dismissed = false;
+        app.input_message = "test @".to_string();
+        app.update_autocomplete();
+        assert!(app.autocomplete_active);
+        app.dismiss_autocomplete();
+        assert!(!app.autocomplete_active);
+    }
+
+    #[test]
+    fn test_unread_mentions_and_regular_unreads() {
+        let mut app = App::new();
+        app.my_username = "alice".to_string();
+        app.screen = Screen::Chat;
+
+        // Group message without mention when not active
+        app.handle_server_message(ServerMessage::GroupMessage {
+            group: "rust".to_string(),
+            from: "bob".to_string(),
+            content: "hello world".to_string(),
+            timestamp: 1000,
+        });
+        assert!(app.unread_messages.contains("rust"));
+        assert!(!app.unread_mentions.contains("rust"));
+
+        // Group message WITH mention when not active
+        app.handle_server_message(ServerMessage::GroupMessage {
+            group: "rust".to_string(),
+            from: "bob".to_string(),
+            content: "hello @alice please review".to_string(),
+            timestamp: 1001,
+        });
+        assert!(app.unread_mentions.contains("rust"));
+
+        // Opening chat clears mentions and unreads
+        app.groups = vec![GroupInfo {
+            name: "rust".to_string(),
+            creator: "bob".to_string(),
+            members: vec!["alice".to_string(), "bob".to_string()],
+            is_protected: false,
+        }];
+        app.cursor_group_idx = Some(0);
+        app.open_selected_group_chat();
+        assert!(!app.unread_mentions.contains("rust"));
+        assert!(!app.unread_messages.contains("rust"));
     }
 }

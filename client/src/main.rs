@@ -388,37 +388,73 @@ async fn run_app(
                                         }
                                         _ => {}
                                     },
-                                    ActivePanel::Input => match key.code {
-                                        KeyCode::Enter => {
-                                            if let Some(msg) = app.send_current_message() {
-                                                let _ = outbound_tx.send(msg);
+                                    ActivePanel::Input => {
+                                        if app.autocomplete_active {
+                                            match key.code {
+                                                KeyCode::Down => {
+                                                    app.autocomplete_next();
+                                                }
+                                                KeyCode::Up => {
+                                                    app.autocomplete_prev();
+                                                }
+                                                KeyCode::Tab | KeyCode::Enter => {
+                                                    app.apply_autocomplete();
+                                                }
+                                                KeyCode::Esc => {
+                                                    app.dismiss_autocomplete();
+                                                }
+                                                KeyCode::Backspace => {
+                                                    app.input_message.pop();
+                                                    app.update_autocomplete();
+                                                }
+                                                KeyCode::Char(c) => {
+                                                    if c == '@' {
+                                                        app.autocomplete_dismissed = false;
+                                                    }
+                                                    app.input_message.push(c);
+                                                    app.update_autocomplete();
+                                                }
+                                                _ => {}
+                                            }
+                                        } else {
+                                            match key.code {
+                                                KeyCode::Enter => {
+                                                    if let Some(msg) = app.send_current_message() {
+                                                        let _ = outbound_tx.send(msg);
+                                                    }
+                                                }
+                                                KeyCode::Backspace => {
+                                                    app.input_message.pop();
+                                                    app.update_autocomplete();
+                                                }
+                                                KeyCode::Esc => {
+                                                    if app.active_chat_group.is_some() {
+                                                        app.active_panel = ActivePanel::Groups;
+                                                    } else {
+                                                        app.active_panel = ActivePanel::Users;
+                                                    }
+                                                }
+                                                KeyCode::Tab => {
+                                                    app.active_panel = ActivePanel::Users;
+                                                }
+                                                KeyCode::Left if app.input_message.is_empty() => {
+                                                    if app.active_chat_group.is_some() {
+                                                        app.active_panel = ActivePanel::Groups;
+                                                    } else {
+                                                        app.active_panel = ActivePanel::Users;
+                                                    }
+                                                }
+                                                KeyCode::Char(c) => {
+                                                    if c == '@' {
+                                                        app.autocomplete_dismissed = false;
+                                                    }
+                                                    app.input_message.push(c);
+                                                    app.update_autocomplete();
+                                                }
+                                                _ => {}
                                             }
                                         }
-                                        KeyCode::Backspace => {
-                                            app.input_message.pop();
-                                        }
-                                        KeyCode::Esc => {
-                                            if app.active_chat_group.is_some() {
-                                                app.active_panel = ActivePanel::Groups;
-                                            } else {
-                                                app.active_panel = ActivePanel::Users;
-                                            }
-                                        }
-                                        KeyCode::Tab => {
-                                            app.active_panel = ActivePanel::Users;
-                                        }
-                                        KeyCode::Left if app.input_message.is_empty() => {
-                                            if app.active_chat_group.is_some() {
-                                                app.active_panel = ActivePanel::Groups;
-                                            } else {
-                                                app.active_panel = ActivePanel::Users;
-                                            }
-                                        }
-                                        KeyCode::Char(c) => {
-                                            app.input_message.push(c);
-                                        }
-                                        _ => {}
-                                    },
+                                    }
                                 }
                             }
                         }

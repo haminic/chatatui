@@ -39,6 +39,51 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+/// Helper function to format message spans with highlighted @mentions.
+fn format_message_spans<'a>(
+    content: &'a str,
+    my_username: &str,
+    is_mention: bool,
+) -> Vec<Span<'a>> {
+    if !is_mention || my_username.is_empty() {
+        return vec![Span::raw(content)];
+    }
+
+    let target = format!("@{my_username}");
+    let mut spans = Vec::new();
+    let mut rest = content;
+
+    while let Some(pos) = rest.find(&target) {
+        let after_idx = pos + target.len();
+        let is_word_end = rest[after_idx..]
+            .chars()
+            .next()
+            .map_or(true, |c| !c.is_alphanumeric() && c != '_');
+
+        if is_word_end {
+            if pos > 0 {
+                spans.push(Span::raw(&rest[..pos]));
+            }
+            spans.push(Span::styled(
+                &rest[pos..after_idx],
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ));
+            rest = &rest[after_idx..];
+        } else {
+            spans.push(Span::raw(&rest[..after_idx]));
+            rest = &rest[after_idx..];
+        }
+    }
+
+    if !rest.is_empty() {
+        spans.push(Span::raw(rest));
+    }
+
+    spans
+}
+
 fn render_connect_screen(frame: &mut Frame, app: &App) {
     let size = frame.area();
 
@@ -228,15 +273,30 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 let is_me = user == &app.my_username;
                 let is_active_chat = app.active_chat() == Some(user.as_str());
                 let is_cursor = app.cursor_user_idx == Some(idx);
+                let has_unread = app.unread_messages.contains(user);
 
-                let badge = if is_active_chat { "●" } else { " " };
+                let badge = if is_active_chat {
+                    "● "
+                } else if has_unread {
+                    "● "
+                } else {
+                    "  "
+                };
+
+                let badge_style = if is_active_chat {
+                    Style::default().fg(Color::Green)
+                } else if has_unread {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
 
                 let content = if is_me {
-                    format!("{badge} @{user} (you)")
+                    format!("@{user} (you)")
                 } else if is_active_chat {
-                    format!("{badge} @{user} [active]")
+                    format!("@{user} [active]")
                 } else {
-                    format!("{badge} @{user}")
+                    format!("@{user}")
                 };
 
                 let style = if is_cursor && app.active_panel == ActivePanel::Users {
@@ -258,7 +318,10 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                     Style::default().fg(Color::White)
                 };
 
-                ListItem::new(Span::styled(content, style))
+                ListItem::new(Line::from(vec![
+                    Span::styled(badge, badge_style),
+                    Span::styled(content, style),
+                ]))
             })
             .collect()
     };
@@ -297,8 +360,19 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 let is_cursor = app.cursor_group_idx == Some(idx);
                 let is_creator = grp.creator == app.my_username;
                 let is_member = grp.members.contains(&app.my_username);
+                let has_mention = app.unread_mentions.contains(&grp.name);
+                let has_unread = app.unread_messages.contains(&grp.name);
 
-                let badge = if is_active_chat { "●" } else { " " };
+                let badge_span = if has_mention {
+                    Span::styled("[@] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                } else if is_active_chat {
+                    Span::styled("● ", Style::default().fg(Color::Green))
+                } else if has_unread {
+                    Span::styled("● ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                } else {
+                    Span::raw("  ")
+                };
+
                 let lock_str = if grp.is_protected { "🔒 " } else { "" };
                 let role_badge = if is_creator {
                     "[created]"
@@ -313,7 +387,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 };
 
                 let content = format!(
-                    "{badge} {lock_str}#{name} {role} ({count})",
+                    "{lock_str}#{name} {role} ({count})",
                     name = grp.name,
                     role = role_badge,
                     count = grp.members.len(),
@@ -336,7 +410,10 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                     Style::default().fg(Color::Gray)
                 };
 
-                ListItem::new(Span::styled(content, style))
+                ListItem::new(Line::from(vec![
+                    badge_span,
+                    Span::styled(content, style),
+                ]))
             })
             .collect()
     };
@@ -434,10 +511,25 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
 
                         let time_span = Span::styled(time_str, time_style);
                         let sender_span = Span::styled(format!("{sender_name}: "), sender_style);
-                        let content_span = Span::raw(&msg.content);
+                        let mut line_spans = vec![time_span];
 
-                        Line::from(vec![time_span, sender_span, content_span])
-                            .alignment(Alignment::Left)
+                        if msg.is_mention {
+                            line_spans.push(Span::styled(
+                                "[MENTION] ",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                        }
+
+                        line_spans.push(sender_span);
+                        line_spans.extend(format_message_spans(
+                            &msg.content,
+                            &app.my_username,
+                            msg.is_mention,
+                        ));
+
+                        Line::from(line_spans).alignment(Alignment::Left)
                     }
                 })
                 .collect();
@@ -500,6 +592,45 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
             .title(input_title),
     );
     frame.render_widget(input_p, right_chunks[1]);
+
+    // Render Autocomplete Popup if active
+    if app.autocomplete_active && !app.autocomplete_candidates.is_empty() {
+        let input_area = right_chunks[1];
+        let height = (app.autocomplete_candidates.len().min(5) + 2) as u16;
+        let y = input_area.y.saturating_sub(height);
+        let x = input_area.x + 2;
+        let width = 30.min(input_area.width.saturating_sub(4));
+        let popup_area = Rect::new(x, y, width, height);
+
+        frame.render_widget(Clear, popup_area);
+
+        let items: Vec<ListItem> = app
+            .autocomplete_candidates
+            .iter()
+            .enumerate()
+            .take(5)
+            .map(|(i, candidate)| {
+                let is_sel = i == app.autocomplete_selected;
+                let style = if is_sel {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .bg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(Span::styled(format!(" @{candidate}"), style))
+            })
+            .collect();
+
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(" Mention (@) "),
+        );
+        frame.render_widget(list, popup_area);
+    }
 
     // Bottom Action Bar
     let action_spans = match app.active_panel {
