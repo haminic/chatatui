@@ -1,0 +1,54 @@
+name: Deploy Server to AWS EC2
+
+on:
+  workflow_dispatch: # Adds a manual "Run workflow" button in GitHub Actions UI
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Download your repo code onto the GitHub runner
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up the Rust compiler
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Step 3: Cache dependencies so subsequent builds are much faster
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # Step 4: Compile only the server binary in release mode
+      - name: Build server binary
+        run: cargo build --release --bin server
+
+      # Step 5: Securely copy the compiled binary to your EC2 instance over SSH
+      - name: Upload binary to EC2 via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "target/release/server"
+          target: "/home/ubuntu/chatatui"
+          strip_components: 2
+
+      # Step 6: Make executable and restart the systemd service
+      - name: Restart server service via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            chmod +x /home/ubuntu/chatatui/server
+            sudo systemctl restart chatatui
+            systemctl status chatatui --no-pager
