@@ -11,13 +11,13 @@ cargo run -p client
 ```
 
 ## ToDo
-- List client own name in Connected User panel.
-- Move the timestamp in front of username.
-- When leaving group, clear chat and move back "no active conversation" page.
-- Disconnected username cannot be reused (unique username).
+- [x] List client own name in Connected User panel.
+- [x] Move the timestamp in front of username.
+- [x] When leaving group, clear chat and move back "no active conversation" page.
+- [x] Disconnected username cannot be reused (unique username).
 
 ### Part 3: Special Points
-- Meta AI (AI feature)
-- Password for private group
-- Cloud Deploy
-- @Mention + Noti
+- [ ] Meta AI (AI feature)
+- [ ] Password for private group
+- [ ] Cloud Deploy
+- [ ] @Mention + Noti
