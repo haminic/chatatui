@@ -374,6 +374,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 };
 
                 let lock_str = if grp.is_protected { "🔒 " } else { "" };
+
                 let role_badge = if is_creator {
                     "[created]"
                 } else if is_member {
@@ -422,7 +423,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(groups_border_style)
-            .title(format!(" Groups ({}) [c: New] ", app.groups.len())),
+            .title(format!(" Groups ({}) [n: New] ", app.groups.len())),
     );
     let mut grp_state = ListState::default();
     grp_state.select(app.cursor_group_idx);
@@ -511,8 +512,8 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
 
                         let time_span = Span::styled(time_str, time_style);
                         let sender_span = Span::styled(format!("{sender_name}: "), sender_style);
-                        let mut line_spans = vec![time_span];
 
+                        let mut line_spans = Vec::new();
                         if msg.is_mention {
                             line_spans.push(Span::styled(
                                 "[MENTION] ",
@@ -521,7 +522,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                                     .add_modifier(Modifier::BOLD),
                             ));
                         }
-
+                        line_spans.push(time_span);
                         line_spans.push(sender_span);
                         line_spans.extend(format_message_spans(
                             &msg.content,
@@ -641,8 +642,8 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
             Span::raw("Open DM   "),
             Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
             Span::raw("Groups Panel   "),
-            Span::styled("[c] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Create Group   "),
+            Span::styled("[n] ", Style::default().fg(Color::Cyan)),
+            Span::raw("New Group   "),
             Span::styled("[Ctrl+C] ", Style::default().fg(Color::Cyan)),
             Span::raw("Quit"),
         ],
@@ -666,7 +667,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                         Span::raw("Delete   "),
                         Span::styled("[m] ", Style::default().fg(Color::Cyan)),
                         Span::raw("Members   "),
-                        Span::styled("[c] ", Style::default().fg(Color::Cyan)),
+                        Span::styled("[n] ", Style::default().fg(Color::Cyan)),
                         Span::raw("New Group   "),
                         Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
                         Span::raw(tab_target),
@@ -681,7 +682,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                         Span::raw("Leave   "),
                         Span::styled("[m] ", Style::default().fg(Color::Cyan)),
                         Span::raw("Members   "),
-                        Span::styled("[c] ", Style::default().fg(Color::Cyan)),
+                        Span::styled("[n] ", Style::default().fg(Color::Cyan)),
                         Span::raw("New Group   "),
                         Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
                         Span::raw(tab_target),
@@ -694,7 +695,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                         Span::raw("Join Group   "),
                         Span::styled("[m] ", Style::default().fg(Color::Cyan)),
                         Span::raw("Members   "),
-                        Span::styled("[c] ", Style::default().fg(Color::Cyan)),
+                        Span::styled("[n] ", Style::default().fg(Color::Cyan)),
                         Span::raw("New Group   "),
                         Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
                         Span::raw(tab_target),
@@ -702,7 +703,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 }
             } else {
                 vec![
-                    Span::styled("[c] ", Style::default().fg(Color::Cyan)),
+                    Span::styled("[n] ", Style::default().fg(Color::Cyan)),
                     Span::raw("New Group   "),
                     Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
                     Span::raw("Users Panel   "),
@@ -711,16 +712,59 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 ]
             }
         }
-        ActivePanel::Input => vec![
-            Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Send Message   "),
-            Span::styled("[Esc] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Exit Chat   "),
-            Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Browse Users   "),
-            Span::styled("[Ctrl+C] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Quit"),
-        ],
+        ActivePanel::Input => {
+            if let Some(ref grp_name) = app.active_chat_group {
+                let is_creator = app
+                    .groups
+                    .iter()
+                    .any(|g| &g.name == grp_name && g.creator == app.my_username);
+
+                if is_creator {
+                    vec![
+                        Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Send   "),
+                        Span::styled("[Ctrl+D] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Delete   "),
+                        Span::styled("[Ctrl+M] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Members   "),
+                        Span::styled("[Ctrl+N] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("New Group   "),
+                        Span::styled("[/help] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Commands   "),
+                        Span::styled("[Esc] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Exit Chat"),
+                    ]
+                } else {
+                    vec![
+                        Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Send   "),
+                        Span::styled("[Ctrl+L] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Leave   "),
+                        Span::styled("[Ctrl+M] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Members   "),
+                        Span::styled("[Ctrl+N] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("New Group   "),
+                        Span::styled("[/help] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Commands   "),
+                        Span::styled("[Esc] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Exit Chat"),
+                    ]
+                }
+            } else {
+                vec![
+                    Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
+                    Span::raw("Send Message   "),
+                    Span::styled("[Ctrl+N] ", Style::default().fg(Color::Cyan)),
+                    Span::raw("New Group   "),
+                    Span::styled("[Esc] ", Style::default().fg(Color::Cyan)),
+                    Span::raw("Exit Chat   "),
+                    Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
+                    Span::raw("Browse Users   "),
+                    Span::styled("[Ctrl+C] ", Style::default().fg(Color::Cyan)),
+                    Span::raw("Quit"),
+                ]
+            }
+        }
     };
 
     let status_span = if let Some(ref status) = app.status_message {

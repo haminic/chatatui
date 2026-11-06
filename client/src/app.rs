@@ -349,6 +349,120 @@ impl App {
         }
     }
 
+    /// Opens the Leave Group confirmation modal for the currently active group.
+    pub fn open_leave_current_group_modal(&mut self) {
+        if let Some(ref grp_name) = self.active_chat_group {
+            if let Some(grp) = self.groups.iter().find(|g| &g.name == grp_name) {
+                if grp.creator == self.my_username {
+                    self.status_message = Some(
+                        "You created this group. Use delete (/delete or Ctrl+D) to remove it."
+                            .to_string(),
+                    );
+                } else if grp.members.contains(&self.my_username) {
+                    self.modal = Some(Modal::ConfirmLeaveGroup {
+                        group_name: grp_name.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Opens the Delete Group confirmation modal for the currently active group if creator.
+    pub fn open_delete_current_group_modal(&mut self) {
+        if let Some(ref grp_name) = self.active_chat_group {
+            if let Some(grp) = self.groups.iter().find(|g| &g.name == grp_name) {
+                if grp.creator == self.my_username {
+                    self.modal = Some(Modal::ConfirmDeleteGroup {
+                        group_name: grp_name.clone(),
+                    });
+                } else {
+                    self.status_message =
+                        Some("Only the creator can delete this group".to_string());
+                }
+            }
+        }
+    }
+
+    /// Opens the View Members modal for the currently active group.
+    pub fn open_members_current_group_modal(&mut self) {
+        if let Some(ref grp_name) = self.active_chat_group {
+            if let Some(grp) = self.groups.iter().find(|g| &g.name == grp_name) {
+                self.modal = Some(Modal::ViewMembers {
+                    group_name: grp_name.clone(),
+                    members: grp.members.clone(),
+                });
+            }
+        }
+    }
+
+    /// Opens the Create Group modal.
+    pub fn open_create_group_modal(&mut self, default_name: Option<String>) {
+        self.modal = Some(Modal::CreateGroup {
+            name_input: default_name.unwrap_or_default(),
+            password_input: String::new(),
+            active_field: CreateGroupField::Name,
+            error: None,
+        });
+    }
+
+    /// Executes a slash command typed in the input box.
+    /// Returns true if the command was processed (and should not be sent as a chat message).
+    pub fn handle_slash_command(&mut self) -> bool {
+        let input = self.input_message.trim();
+        if !input.starts_with('/') {
+            return false;
+        }
+
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        let cmd = parts.first().copied().unwrap_or("");
+
+        match cmd {
+            "/leave" => {
+                if self.active_chat_group.is_some() {
+                    self.open_leave_current_group_modal();
+                } else {
+                    self.status_message =
+                        Some("/leave can only be used in a group chat".to_string());
+                }
+            }
+            "/delete" => {
+                if self.active_chat_group.is_some() {
+                    self.open_delete_current_group_modal();
+                } else {
+                    self.status_message =
+                        Some("/delete can only be used in a group chat".to_string());
+                }
+            }
+            "/members" | "/who" => {
+                if self.active_chat_group.is_some() {
+                    self.open_members_current_group_modal();
+                } else {
+                    self.status_message =
+                        Some("/members can only be used in a group chat".to_string());
+                }
+            }
+            "/create" => {
+                let name = parts.get(1).map(|s| s.to_string());
+                self.open_create_group_modal(name);
+            }
+            "/help" => {
+                self.status_message = Some(
+                    "Available commands: /leave, /delete, /members, /create, /help".to_string(),
+                );
+            }
+            _ => {
+                self.status_message = Some(format!(
+                    "Unknown command '{cmd}'. Available: /leave, /delete, /members, /create, /help"
+                ));
+            }
+        }
+
+        self.input_message.clear();
+        self.autocomplete_active = false;
+        self.autocomplete_candidates.clear();
+        true
+    }
+
     /// Returns a slice of chat messages for the currently open conversation.
     pub fn current_chat_history(&self) -> &[ChatMessage] {
         if let Some(ref g) = self.active_chat_group {
@@ -380,42 +494,39 @@ impl App {
                 || self.input_message[..at_idx]
                     .chars()
                     .last()
-                    .map_or(false, |c| c.is_whitespace());
-
-            if is_at_start {
-                let query = &self.input_message[at_idx + 1..];
-                // Autocomplete only if query doesn't contain spaces
-                if !query.contains(char::is_whitespace) {
-                    let mut candidates: Vec<String> = Vec::new();
-
-                    // If active group, suggest group members first, else all users
-                    if let Some(ref grp_name) = self.active_chat_group {
-                        if let Some(grp) = self.groups.iter().find(|g| &g.name == grp_name) {
-                            for member in &grp.members {
-                                if member != &self.my_username
-                                    && member.to_lowercase().starts_with(&query.to_lowercase())
-                                {
-                                    candidates.push(member.clone());
-                                }
-                            }
-                        }
+                    .map_or(true, |c| c.is_whitespace());
+            let query = &self.input_message[at_idx + 1..];
+            // No spaces in query
+            if is_at_start && !query.contains(char::is_whitespace) {
+                let mut candidates: Vec<String> = if let Some(ref grp_name) = self.active_chat_group {
+                    if let Some(grp) = self.groups.iter().find(|g| &g.name == grp_name) {
+                        grp.members
+                            .iter()
+                            .filter(|m| *m != &self.my_username && m.to_lowercase().starts_with(&query.to_lowercase()))
+                            .cloned()
+                            .collect()
                     } else {
-                        for user in &self.users {
-                            if user != &self.my_username
-                                && user.to_lowercase().starts_with(&query.to_lowercase())
-                            {
-                                candidates.push(user.clone());
-                            }
-                        }
+                        Vec::new()
                     }
+                } else if self.active_chat_user.is_some() {
+                    self.users
+                        .iter()
+                        .filter(|u| *u != &self.my_username && u.to_lowercase().starts_with(&query.to_lowercase()))
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
-                    if !candidates.is_empty() {
-                        candidates.sort();
-                        self.autocomplete_candidates = candidates;
-                        self.autocomplete_active = true;
+                candidates.sort();
+
+                if !candidates.is_empty() {
+                    self.autocomplete_candidates = candidates;
+                    if self.autocomplete_selected >= self.autocomplete_candidates.len() {
                         self.autocomplete_selected = 0;
-                        return;
                     }
+                    self.autocomplete_active = true;
+                    return;
                 }
             }
         }
@@ -629,6 +740,8 @@ impl App {
         for deleted in &deleted_groups {
             self.chat_histories
                 .remove(&Self::group_history_key(deleted));
+            self.unread_mentions.remove(deleted);
+            self.unread_messages.remove(deleted);
         }
 
         // If currently active group was deleted, reset active chat
@@ -758,10 +871,6 @@ impl App {
             return None;
         }
 
-        self.autocomplete_active = false;
-        self.autocomplete_candidates.clear();
-        self.autocomplete_selected = 0;
-
         if let Some(ref group) = self.active_chat_group {
             let key = Self::group_history_key(group);
             self.chat_histories
@@ -819,6 +928,11 @@ impl App {
         self.active_chat_user = None;
         self.active_chat_group = None;
         self.modal = None;
+        self.unread_messages.clear();
+        self.unread_mentions.clear();
+        self.autocomplete_active = false;
+        self.autocomplete_candidates.clear();
+        self.autocomplete_selected = 0;
     }
 }
 
@@ -1026,5 +1140,107 @@ mod tests {
         app.open_selected_group_chat();
         assert!(!app.unread_mentions.contains("rust"));
         assert!(!app.unread_messages.contains("rust"));
+    }
+
+    #[test]
+    fn test_slash_commands_in_group_chat() {
+        let mut app = App::new();
+        app.my_username = "alice".to_string();
+        app.groups = vec![
+            GroupInfo {
+                name: "my_room".to_string(),
+                creator: "alice".to_string(),
+                members: vec!["alice".to_string(), "bob".to_string()],
+                is_protected: false,
+            },
+            GroupInfo {
+                name: "other_room".to_string(),
+                creator: "bob".to_string(),
+                members: vec!["alice".to_string(), "bob".to_string()],
+                is_protected: false,
+            },
+        ];
+
+        // 1. In 'other_room' (member, not creator): /leave opens confirm leave modal
+        app.active_chat_group = Some("other_room".to_string());
+        app.input_message = "/leave".to_string();
+        assert!(app.handle_slash_command());
+        assert_eq!(
+            app.modal,
+            Some(Modal::ConfirmLeaveGroup {
+                group_name: "other_room".to_string(),
+            })
+        );
+        assert!(app.input_message.is_empty());
+
+        // 2. In 'other_room' (not creator): /delete gives error status
+        app.modal = None;
+        app.input_message = "/delete".to_string();
+        assert!(app.handle_slash_command());
+        assert_eq!(app.modal, None);
+        assert_eq!(
+            app.status_message,
+            Some("Only the creator can delete this group".to_string())
+        );
+
+        // 3. In 'my_room' (creator): /delete opens confirm delete modal
+        app.active_chat_group = Some("my_room".to_string());
+        app.input_message = "/delete".to_string();
+        assert!(app.handle_slash_command());
+        assert_eq!(
+            app.modal,
+            Some(Modal::ConfirmDeleteGroup {
+                group_name: "my_room".to_string(),
+            })
+        );
+
+        // 4. /members opens members popup
+        app.modal = None;
+        app.input_message = "/members".to_string();
+        assert!(app.handle_slash_command());
+        assert_eq!(
+            app.modal,
+            Some(Modal::ViewMembers {
+                group_name: "my_room".to_string(),
+                members: vec!["alice".to_string(), "bob".to_string()],
+            })
+        );
+
+        // 5. /create with optional pre-filled name
+        app.modal = None;
+        app.input_message = "/create team_rust".to_string();
+        assert!(app.handle_slash_command());
+        assert_eq!(
+            app.modal,
+            Some(Modal::CreateGroup {
+                name_input: "team_rust".to_string(),
+                password_input: String::new(),
+                active_field: CreateGroupField::Name,
+                error: None,
+            })
+        );
+
+        // 6. Regular non-slash message returns false
+        app.input_message = "hello world".to_string();
+        assert!(!app.handle_slash_command());
+    }
+
+    #[test]
+    fn test_duplicate_group_check() {
+        let mut app = App::new();
+        app.groups = vec![GroupInfo {
+            name: "existing_group".to_string(),
+            creator: "alice".to_string(),
+            members: vec!["alice".to_string()],
+            is_protected: false,
+        }];
+
+        // Duplicate name is detected
+        let is_duplicate = app.groups.iter().any(|g| g.name == "existing_group");
+        assert!(is_duplicate);
+
+        // Non-duplicate name is accepted
+        let is_unique = !app.groups.iter().any(|g| g.name == "new_group");
+        assert!(is_unique);
     }
 }

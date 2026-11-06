@@ -202,6 +202,8 @@ async fn run_app(
                                         KeyCode::Enter => {
                                             if let Err(e) = common::validate_name(name_input) {
                                                 *error = Some(e.to_string());
+                                            } else if app.groups.iter().any(|g| &g.name == name_input) {
+                                                *error = Some(format!("Group '{name_input}' already exists"));
                                             } else {
                                                 let name = name_input.clone();
                                                 let pw = if password_input.trim().is_empty() {
@@ -296,13 +298,8 @@ async fn run_app(
                                         KeyCode::Tab => {
                                             app.active_panel = ActivePanel::Groups;
                                         }
-                                        KeyCode::Char('c') => {
-                                            app.modal = Some(Modal::CreateGroup {
-                                                name_input: String::new(),
-                                                password_input: String::new(),
-                                                active_field: CreateGroupField::Name,
-                                                error: None,
-                                            });
+                                        KeyCode::Char('n') | KeyCode::Char('c') => {
+                                            app.open_create_group_modal(None);
                                         }
                                         KeyCode::Char('q') => {
                                             break;
@@ -348,13 +345,8 @@ async fn run_app(
                                         KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
                                             app.active_panel = ActivePanel::Users;
                                         }
-                                        KeyCode::Char('c') => {
-                                            app.modal = Some(Modal::CreateGroup {
-                                                name_input: String::new(),
-                                                password_input: String::new(),
-                                                active_field: CreateGroupField::Name,
-                                                error: None,
-                                            });
+                                        KeyCode::Char('n') | KeyCode::Char('c') => {
+                                            app.open_create_group_modal(None);
                                         }
                                         KeyCode::Char('l') => {
                                             if let Some(grp) = app.highlighted_group()
@@ -389,7 +381,23 @@ async fn run_app(
                                         _ => {}
                                     },
                                     ActivePanel::Input => {
-                                        if app.autocomplete_active {
+                                        if key.modifiers.contains(KeyModifiers::CONTROL) {
+                                            match key.code {
+                                                KeyCode::Char('l') => {
+                                                    app.open_leave_current_group_modal();
+                                                }
+                                                KeyCode::Char('d') => {
+                                                    app.open_delete_current_group_modal();
+                                                }
+                                                KeyCode::Char('m') | KeyCode::Char('v') => {
+                                                    app.open_members_current_group_modal();
+                                                }
+                                                KeyCode::Char('n') | KeyCode::Char('g') => {
+                                                    app.open_create_group_modal(None);
+                                                }
+                                                _ => {}
+                                            }
+                                        } else if app.autocomplete_active {
                                             match key.code {
                                                 KeyCode::Down => {
                                                     app.autocomplete_next();
@@ -419,8 +427,10 @@ async fn run_app(
                                         } else {
                                             match key.code {
                                                 KeyCode::Enter => {
-                                                    if let Some(msg) = app.send_current_message() {
-                                                        let _ = outbound_tx.send(msg);
+                                                    if !app.handle_slash_command() {
+                                                        if let Some(msg) = app.send_current_message() {
+                                                            let _ = outbound_tx.send(msg);
+                                                        }
                                                     }
                                                 }
                                                 KeyCode::Backspace => {
