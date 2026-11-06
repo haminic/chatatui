@@ -393,11 +393,26 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                         ))
                         .alignment(Alignment::Center)
                     } else {
-                        let sender_str = if msg.is_me {
-                            format!("<{}> ", app.my_username)
+                        let sender_name = if msg.is_me {
+                            &app.my_username
                         } else {
-                            format!("<{}> ", msg.sender)
+                            &msg.sender
                         };
+
+                        let time_str = if msg.is_pending {
+                            "⏳ ".to_string()
+                        } else if let Some(t) = msg.formatted_time() {
+                            format!("{t} ")
+                        } else {
+                            "".to_string()
+                        };
+
+                        let time_style = if msg.is_pending {
+                            Style::default().fg(Color::Yellow)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        };
+
                         let sender_style = if msg.is_me {
                             Style::default()
                                 .fg(Color::Green)
@@ -407,21 +422,12 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                                 .fg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD)
                         };
-                        let sender_span = Span::styled(sender_str, sender_style);
+
+                        let time_span = Span::styled(time_str, time_style);
+                        let sender_span = Span::styled(format!("{sender_name}: "), sender_style);
                         let content_span = Span::raw(&msg.content);
 
-                        let time_span = if msg.is_pending {
-                            Span::styled("  ⏳", Style::default().fg(Color::Yellow))
-                        } else if let Some(time_str) = msg.formatted_time() {
-                            Span::styled(
-                                format!("  {time_str}"),
-                                Style::default().fg(Color::DarkGray),
-                            )
-                        } else {
-                            Span::raw("")
-                        };
-
-                        Line::from(vec![sender_span, content_span, time_span])
+                        Line::from(vec![time_span, sender_span, content_span])
                             .alignment(Alignment::Left)
                     }
                 })
