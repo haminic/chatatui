@@ -656,4 +656,33 @@ mod tests {
         assert_eq!(app.active_panel, ActivePanel::Groups);
         assert!(!app.chat_histories.contains_key(&key));
     }
+
+    #[test]
+    fn test_ordered_groups_roles() {
+        let mut app = App::new();
+        app.my_username = "alice".to_string();
+
+        app.groups = vec![
+            GroupInfo {
+                name: "other_group".to_string(),
+                creator: "bob".to_string(),
+                members: vec!["bob".to_string()],
+            },
+            GroupInfo {
+                name: "joined_group".to_string(),
+                creator: "charlie".to_string(),
+                members: vec!["alice".to_string(), "charlie".to_string()],
+            },
+            GroupInfo {
+                name: "created_group".to_string(),
+                creator: "alice".to_string(),
+                members: vec!["alice".to_string()],
+            },
+        ];
+
+        let ordered = app.ordered_groups();
+        assert_eq!(ordered[0].name, "created_group");
+        assert_eq!(ordered[1].name, "joined_group");
+        assert_eq!(ordered[2].name, "other_group");
+    }
 }

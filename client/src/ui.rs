@@ -299,8 +299,10 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                     "[created]"
                 } else if is_member {
                     "[joined]"
+                } else if is_cursor {
+                    "[Enter to join]"
                 } else {
-                    "[join]"
+                    "[public]"
                 };
 
                 let content = format!(
@@ -506,24 +508,71 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
             Span::styled("[Ctrl+C] ", Style::default().fg(Color::Cyan)),
             Span::raw("Quit"),
         ],
-        ActivePanel::Groups => vec![
-            Span::styled("[j/k] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Browse Groups   "),
-            Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Open Chat   "),
-            Span::styled("[j] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Join   "),
-            Span::styled("[l] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Leave   "),
-            Span::styled("[d] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Delete   "),
-            Span::styled("[m] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Members   "),
-            Span::styled("[c] ", Style::default().fg(Color::Cyan)),
-            Span::raw("New Group   "),
-            Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
-            Span::raw("Focus Chat"),
-        ],
+        ActivePanel::Groups => {
+            if let Some(grp) = app.highlighted_group() {
+                let is_creator = grp.creator == app.my_username;
+                let is_member = grp.members.contains(&app.my_username);
+                let tab_target = if app.active_chat().is_some() {
+                    "Focus Chat"
+                } else {
+                    "Users Panel"
+                };
+
+                if is_creator {
+                    vec![
+                        Span::styled("[j/k] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Browse Groups   "),
+                        Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Open Chat   "),
+                        Span::styled("[d] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Delete   "),
+                        Span::styled("[m] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Members   "),
+                        Span::styled("[c] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("New Group   "),
+                        Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
+                        Span::raw(tab_target),
+                    ]
+                } else if is_member {
+                    vec![
+                        Span::styled("[j/k] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Browse Groups   "),
+                        Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Open Chat   "),
+                        Span::styled("[l] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Leave   "),
+                        Span::styled("[m] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Members   "),
+                        Span::styled("[c] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("New Group   "),
+                        Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
+                        Span::raw(tab_target),
+                    ]
+                } else {
+                    vec![
+                        Span::styled("[j/k] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Browse Groups   "),
+                        Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Join Group   "),
+                        Span::styled("[m] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Members   "),
+                        Span::styled("[c] ", Style::default().fg(Color::Cyan)),
+                        Span::raw("New Group   "),
+                        Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
+                        Span::raw(tab_target),
+                    ]
+                }
+            } else {
+                vec![
+                    Span::styled("[c] ", Style::default().fg(Color::Cyan)),
+                    Span::raw("New Group   "),
+                    Span::styled("[Tab] ", Style::default().fg(Color::Cyan)),
+                    Span::raw("Users Panel   "),
+                    Span::styled("[Ctrl+C] ", Style::default().fg(Color::Cyan)),
+                    Span::raw("Quit"),
+                ]
+            }
+        }
         ActivePanel::Input => vec![
             Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
             Span::raw("Send Message   "),

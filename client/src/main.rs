@@ -290,6 +290,7 @@ async fn run_app(
                                         KeyCode::Char('l') => {
                                             if let Some(grp) = app.highlighted_group()
                                                 && grp.members.contains(&app.my_username)
+                                                && grp.creator != app.my_username
                                             {
                                                 app.modal = Some(Modal::ConfirmLeaveGroup {
                                                     group_name: grp.name,
