@@ -221,12 +221,15 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
             .iter()
             .enumerate()
             .map(|(idx, user)| {
+                let is_me = user == &app.my_username;
                 let is_active_chat = app.active_chat() == Some(user.as_str());
                 let is_cursor = app.cursor_user_idx == Some(idx);
 
                 let badge = if is_active_chat { "●" } else { " " };
 
-                let content = if is_active_chat {
+                let content = if is_me {
+                    format!("{badge} @{user} (you)")
+                } else if is_active_chat {
                     format!("{badge} @{user} [active]")
                 } else {
                     format!("{badge} @{user}")
@@ -242,6 +245,10 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 } else if is_active_chat {
                     Style::default()
                         .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_me {
+                    Style::default()
+                        .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)

@@ -240,6 +240,10 @@ impl App {
     /// Opens the currently highlighted user's conversation in the right panel and focuses input.
     pub fn open_selected_chat(&mut self) {
         if let Some(user) = self.highlighted_user().map(|s| s.to_string()) {
+            if user == self.my_username {
+                self.status_message = Some("Cannot DM yourself".to_string());
+                return;
+            }
             self.active_chat_user = Some(user);
             self.active_chat_group = None;
             self.active_panel = ActivePanel::Input;
@@ -443,17 +447,18 @@ impl App {
 
     /// Updates the user list and wipes chat histories for any users that disconnected.
     pub fn update_user_list(&mut self, new_user_list: Vec<String>) {
-        // Filter out ourselves
-        let peers: Vec<String> = new_user_list
-            .into_iter()
-            .filter(|u| u != &self.my_username)
+        let mut peers: Vec<String> = new_user_list
+            .iter()
+            .filter(|u| *u != &self.my_username)
+            .cloned()
             .collect();
+        peers.sort();
 
-        // Identify disconnected users: previously known users not in the new peers list
+        // Identify disconnected users: previously known users (excluding me) not in new peers list
         let disconnected_users: Vec<String> = self
             .users
             .iter()
-            .filter(|u| !peers.contains(u))
+            .filter(|u| *u != &self.my_username && !peers.contains(u))
             .cloned()
             .collect();
 
@@ -477,7 +482,12 @@ impl App {
         // Remember previously highlighted user to maintain cursor position
         let prev_highlighted = self.highlighted_user().map(|s| s.to_string());
 
-        self.users = peers;
+        let mut full_list = Vec::new();
+        if !self.my_username.is_empty() && new_user_list.contains(&self.my_username) {
+            full_list.push(self.my_username.clone());
+        }
+        full_list.extend(peers);
+        self.users = full_list;
 
         // Restore or adjust cursor position
         if let Some(prev) = prev_highlighted {
@@ -561,3 +571,32 @@ impl App {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_user_list_includes_self_first_and_disables_self_dm() {
+        let mut app = App::new();
+        app.my_username = "alice".to_string();
+
+        app.update_user_list(vec!["charlie".to_string(), "alice".to_string(), "bob".to_string()]);
+
+        // Self should be first, followed by alphabetically sorted peers
+        assert_eq!(app.users, vec!["alice", "bob", "charlie"]);
+        assert_eq!(app.cursor_user_idx, Some(0));
+
+        // Attempting to DM oneself
+        app.open_selected_chat();
+        assert_eq!(app.active_chat_user, None);
+        assert_eq!(app.status_message, Some("Cannot DM yourself".to_string()));
+
+        // Move to bob and open DM
+        app.select_next_user();
+        assert_eq!(app.cursor_user_idx, Some(1));
+        assert_eq!(app.highlighted_user(), Some("bob"));
+        app.open_selected_chat();
+        assert_eq!(app.active_chat_user, Some("bob".to_string()));
+    }
+}
