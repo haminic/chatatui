@@ -65,6 +65,7 @@ pub struct Group {
 pub struct ServerState {
     clients: HashMap<ClientId, ClientSession>,
     users: HashMap<String, ClientId>,
+    used_usernames: HashSet<String>,
     groups: HashMap<String, Group>,
     next_client_id: ClientId,
 }
@@ -80,6 +81,7 @@ impl ServerState {
         Self {
             clients: HashMap::new(),
             users: HashMap::new(),
+            used_usernames: HashSet::new(),
             groups: HashMap::new(),
             next_client_id: 1,
         }
@@ -209,10 +211,11 @@ impl ServerState {
 
         validate_name(&username).map_err(|e| ServerError::InvalidName(e.to_string()))?;
 
-        if self.users.contains_key(&username) {
+        if self.used_usernames.contains(&username) {
             return Err(ServerError::UsernameTaken(username));
         }
 
+        self.used_usernames.insert(username.clone());
         if let Some(session) = self.clients.get_mut(&client_id) {
             session.username = Some(username.clone());
         }
@@ -569,4 +572,30 @@ pub async fn handle_connection(socket: TcpStream, state: Arc<Mutex<ServerState>>
     // Clean up on disconnect
     state.lock().await.disconnect_client(client_id);
     writer_task.abort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_disconnected_username_cannot_be_reused() {
+        let mut state = ServerState::new();
+        let (tx1, _rx1) = tokio::sync::mpsc::unbounded_channel();
+        let c1 = state.connect_client(tx1);
+
+        // Client 1 registers
+        assert!(state.handle_register(c1, "alice".to_string()).is_ok());
+
+        // Client 1 disconnects
+        let disconnected = state.disconnect_client(c1);
+        assert_eq!(disconnected, Some("alice".to_string()));
+        assert!(!state.is_registered("alice"));
+
+        // Client 2 attempts to register with same username 'alice' -> rejected
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
+        let c2 = state.connect_client(tx2);
+        let res = state.handle_register(c2, "alice".to_string());
+        assert_eq!(res, Err(ServerError::UsernameTaken("alice".to_string())));
+    }
 }
