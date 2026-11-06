@@ -260,12 +260,14 @@ async fn run_app(
                                         }
                                         KeyCode::Enter => {
                                             if let Some(grp) = app.highlighted_group() {
+                                                let group_name = grp.name.clone();
                                                 if grp.members.contains(&app.my_username) {
                                                     app.open_selected_group_chat();
                                                 } else {
+                                                    app.join_and_open_group(&group_name);
                                                     let _ = outbound_tx.send(
                                                         ClientMessage::JoinGroup {
-                                                            group: grp.name,
+                                                            group: group_name,
                                                         },
                                                     );
                                                 }

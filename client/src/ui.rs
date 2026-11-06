@@ -185,11 +185,15 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(header_line), main_chunks[0]);
 
     // Body: Split horizontally into Left Panel and Right Panel
+    let left_panel_width = (size.width * 30 / 100)
+        .clamp(44, 56)
+        .min(size.width.saturating_sub(25));
+
     let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(28), // Left Panel (Users / Groups)
-            Constraint::Min(20),    // Right Panel (Chat view & input)
+            Constraint::Length(left_panel_width), // Left Panel (Users / Groups)
+            Constraint::Min(25),                  // Right Panel (Chat view & input)
         ])
         .split(main_chunks[1]);
 

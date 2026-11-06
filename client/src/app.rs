@@ -258,8 +258,27 @@ impl App {
                 self.active_chat_user = None;
                 self.active_panel = ActivePanel::Input;
             } else {
-                self.status_message = Some(format!("Join group '{}' first ([j])", grp.name));
+                self.status_message = Some(format!("Join group '{}' first", grp.name));
             }
+        }
+    }
+
+    /// Joins a group and immediately opens its conversation in the right panel and focuses input.
+    pub fn join_and_open_group(&mut self, group_name: &str) {
+        if let Some(grp) = self.groups.iter_mut().find(|g| g.name == group_name) {
+            if !grp.members.contains(&self.my_username) {
+                grp.members.push(self.my_username.clone());
+            }
+        }
+        self.active_chat_group = Some(group_name.to_string());
+        self.active_chat_user = None;
+        self.active_panel = ActivePanel::Input;
+        self.status_message = Some(format!("Joined group '#{group_name}'"));
+
+        // Adjust cursor position to the group's new index in ordered_groups
+        let ordered = self.ordered_groups();
+        if let Some(idx) = ordered.iter().position(|g| g.name == group_name) {
+            self.cursor_group_idx = Some(idx);
         }
     }
 
@@ -684,5 +703,25 @@ mod tests {
         assert_eq!(ordered[0].name, "created_group");
         assert_eq!(ordered[1].name, "joined_group");
         assert_eq!(ordered[2].name, "other_group");
+    }
+
+    #[test]
+    fn test_join_and_open_group() {
+        let mut app = App::new();
+        app.my_username = "alice".to_string();
+        app.groups = vec![GroupInfo {
+            name: "group_by_two".to_string(),
+            creator: "two".to_string(),
+            members: vec!["two".to_string()],
+        }];
+
+        assert_eq!(app.active_chat_group, None);
+        assert_ne!(app.active_panel, ActivePanel::Input);
+
+        app.join_and_open_group("group_by_two");
+
+        assert_eq!(app.active_chat_group, Some("group_by_two".to_string()));
+        assert_eq!(app.active_panel, ActivePanel::Input);
+        assert!(app.groups[0].members.contains(&"alice".to_string()));
     }
 }
