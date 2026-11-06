@@ -193,6 +193,7 @@ async fn run_app(
                                     Modal::ConfirmLeaveGroup { group_name } => match key.code {
                                         KeyCode::Char('y') | KeyCode::Enter => {
                                             let name = group_name.clone();
+                                            app.leave_group_cleanup(&name);
                                             close_modal = true;
                                             let _ = outbound_tx
                                                 .send(ClientMessage::LeaveGroup { group: name });

@@ -394,6 +394,20 @@ impl App {
         }
     }
 
+    /// Cleans up state when leaving a group:
+    /// Always wipes the group's chat history.
+    /// If the group was open in the active chat, resets active conversation and switches to Groups panel.
+    pub fn leave_group_cleanup(&mut self, group_name: &str) {
+        self.chat_histories
+            .remove(&Self::group_history_key(group_name));
+        if self.active_chat_group.as_deref() == Some(group_name) {
+            self.active_chat_group = None;
+            self.active_panel = ActivePanel::Groups;
+            self.status_message =
+                Some(format!("Left group '#{group_name}'. Chat history wiped."));
+        }
+    }
+
     /// Updates the group list and wipes chat histories for any groups that were deleted.
     pub fn update_group_list(&mut self, new_groups: Vec<GroupInfo>) {
         let new_names: Vec<String> = new_groups.iter().map(|g| g.name.clone()).collect();
@@ -422,6 +436,20 @@ impl App {
             self.status_message = Some(format!(
                 "Group '{deleted_name}' was deleted. Chat history wiped."
             ));
+        } else if let Some(ref active_grp) = self.active_chat_group {
+            // If we are no longer a member of the active group (e.g. left group)
+            let is_member = new_groups
+                .iter()
+                .any(|g| &g.name == active_grp && g.members.contains(&self.my_username));
+            if !is_member {
+                let left_name = active_grp.clone();
+                self.chat_histories
+                    .remove(&Self::group_history_key(&left_name));
+                self.active_chat_group = None;
+                self.active_panel = ActivePanel::Groups;
+                self.status_message =
+                    Some(format!("Left group '#{left_name}'. Chat history wiped."));
+            }
         }
 
         let prev_highlighted = self.highlighted_group().map(|g| g.name);
@@ -598,5 +626,34 @@ mod tests {
         assert_eq!(app.highlighted_user(), Some("bob"));
         app.open_selected_chat();
         assert_eq!(app.active_chat_user, Some("bob".to_string()));
+    }
+
+    #[test]
+    fn test_leaving_group_resets_chat_and_clears_history() {
+        let mut app = App::new();
+        app.my_username = "alice".to_string();
+        app.active_chat_group = Some("rustacean".to_string());
+        app.active_panel = ActivePanel::Input;
+
+        let key = App::group_history_key("rustacean");
+        app.chat_histories.insert(
+            key.clone(),
+            vec![ChatMessage {
+                sender: "alice".to_string(),
+                content: "hello world".to_string(),
+                is_me: true,
+                is_pending: false,
+                timestamp: Some(1700000000),
+            }],
+        );
+
+        assert_eq!(app.chat_histories.get(&key).unwrap().len(), 1);
+
+        // Leave group
+        app.leave_group_cleanup("rustacean");
+
+        assert_eq!(app.active_chat_group, None);
+        assert_eq!(app.active_panel, ActivePanel::Groups);
+        assert!(!app.chat_histories.contains_key(&key));
     }
 }
