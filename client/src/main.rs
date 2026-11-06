@@ -11,7 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 
-use client::app::{ActivePanel, App, ConnectField, Modal, Screen};
+use client::app::{ActivePanel, App, ConnectField, CreateGroupField, Modal, Screen};
 use client::network::{spawn_network_worker, NetworkEvent};
 use client::ui;
 use common::ClientMessage;
@@ -161,26 +161,85 @@ async fn run_app(
                             if let Some(mut modal) = app.modal.take() {
                                 let mut close_modal = false;
                                 match &mut modal {
-                                    Modal::CreateGroup { input, error } => match key.code {
-                                        KeyCode::Char(c)
-                                            if c.is_ascii_alphanumeric() || c == '_' =>
-                                        {
-                                            input.push(c);
+                                    Modal::CreateGroup {
+                                        name_input,
+                                        password_input,
+                                        active_field,
+                                        error,
+                                    } => match key.code {
+                                        KeyCode::Tab | KeyCode::Down | KeyCode::Up => {
+                                            *active_field = match *active_field {
+                                                CreateGroupField::Name => CreateGroupField::Password,
+                                                CreateGroupField::Password => CreateGroupField::Name,
+                                            };
+                                        }
+                                        KeyCode::Char(c) => {
+                                            match *active_field {
+                                                CreateGroupField::Name => {
+                                                    if c.is_ascii_alphanumeric() || c == '_' {
+                                                        name_input.push(c);
+                                                        *error = None;
+                                                    }
+                                                }
+                                                CreateGroupField::Password => {
+                                                    password_input.push(c);
+                                                    *error = None;
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Backspace => {
+                                            match *active_field {
+                                                CreateGroupField::Name => {
+                                                    name_input.pop();
+                                                    *error = None;
+                                                }
+                                                CreateGroupField::Password => {
+                                                    password_input.pop();
+                                                    *error = None;
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Enter => {
+                                            if let Err(e) = common::validate_name(name_input) {
+                                                *error = Some(e.to_string());
+                                            } else {
+                                                let name = name_input.clone();
+                                                let pw = if password_input.trim().is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(password_input.clone())
+                                                };
+                                                close_modal = true;
+                                                let _ = outbound_tx.send(ClientMessage::CreateGroup {
+                                                    group: name,
+                                                    password: pw,
+                                                });
+                                            }
+                                        }
+                                        KeyCode::Esc => {
+                                            close_modal = true;
+                                        }
+                                        _ => {}
+                                    },
+                                    Modal::EnterGroupPassword {
+                                        group_name,
+                                        password_input,
+                                        error,
+                                    } => match key.code {
+                                        KeyCode::Char(c) => {
+                                            password_input.push(c);
                                             *error = None;
                                         }
                                         KeyCode::Backspace => {
-                                            input.pop();
+                                            password_input.pop();
                                             *error = None;
                                         }
                                         KeyCode::Enter => {
-                                            if let Err(e) = common::validate_name(input) {
-                                                *error = Some(e.to_string());
-                                            } else {
-                                                let name = input.clone();
-                                                close_modal = true;
-                                                let _ = outbound_tx
-                                                    .send(ClientMessage::CreateGroup { group: name });
-                                            }
+                                            let pw = password_input.clone();
+                                            let _ = outbound_tx.send(ClientMessage::JoinGroup {
+                                                group: group_name.clone(),
+                                                password: Some(pw),
+                                            });
                                         }
                                         KeyCode::Esc => {
                                             close_modal = true;
@@ -239,7 +298,9 @@ async fn run_app(
                                         }
                                         KeyCode::Char('c') => {
                                             app.modal = Some(Modal::CreateGroup {
-                                                input: String::new(),
+                                                name_input: String::new(),
+                                                password_input: String::new(),
+                                                active_field: CreateGroupField::Name,
                                                 error: None,
                                             });
                                         }
@@ -260,11 +321,18 @@ async fn run_app(
                                                 let group_name = grp.name.clone();
                                                 if grp.members.contains(&app.my_username) {
                                                     app.open_selected_group_chat();
+                                                } else if grp.is_protected {
+                                                    app.modal = Some(Modal::EnterGroupPassword {
+                                                        group_name,
+                                                        password_input: String::new(),
+                                                        error: None,
+                                                    });
                                                 } else {
                                                     app.join_and_open_group(&group_name);
                                                     let _ = outbound_tx.send(
                                                         ClientMessage::JoinGroup {
                                                             group: group_name,
+                                                            password: None,
                                                         },
                                                     );
                                                 }
@@ -282,7 +350,9 @@ async fn run_app(
                                         }
                                         KeyCode::Char('c') => {
                                             app.modal = Some(Modal::CreateGroup {
-                                                input: String::new(),
+                                                name_input: String::new(),
+                                                password_input: String::new(),
+                                                active_field: CreateGroupField::Name,
                                                 error: None,
                                             });
                                         }

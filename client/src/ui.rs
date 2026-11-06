@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
 
-use crate::app::{ActivePanel, App, ConnectField, Modal, Screen};
+use crate::app::{ActivePanel, App, ConnectField, CreateGroupField, Modal, Screen};
 
 pub fn render(frame: &mut Frame, app: &App) {
     match app.screen {
@@ -299,18 +299,21 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 let is_member = grp.members.contains(&app.my_username);
 
                 let badge = if is_active_chat { "●" } else { " " };
+                let lock_str = if grp.is_protected { "🔒 " } else { "" };
                 let role_badge = if is_creator {
                     "[created]"
                 } else if is_member {
                     "[joined]"
                 } else if is_cursor {
                     "[Enter to join]"
+                } else if grp.is_protected {
+                    "[private]"
                 } else {
                     "[public]"
                 };
 
                 let content = format!(
-                    "{badge} #{name} {role} ({count})",
+                    "{badge} {lock_str}#{name} {role} ({count})",
                     name = grp.name,
                     role = role_badge,
                     count = grp.members.len(),
@@ -608,8 +611,13 @@ fn render_modal(frame: &mut Frame, modal: &Modal) {
     let size = frame.area();
 
     match modal {
-        Modal::CreateGroup { input, error } => {
-            let area = centered_rect(50, 30, size);
+        Modal::CreateGroup {
+            name_input,
+            password_input,
+            active_field,
+            error,
+        } => {
+            let area = centered_rect(55, 42, size);
             frame.render_widget(Clear, area);
 
             let block = Block::default()
@@ -624,17 +632,99 @@ fn render_modal(frame: &mut Frame, modal: &Modal) {
                 .direction(Direction::Vertical)
                 .margin(1)
                 .constraints([
-                    Constraint::Length(3), // input
+                    Constraint::Length(3), // name input
+                    Constraint::Length(3), // password input
                     Constraint::Length(2), // error
                     Constraint::Length(1), // hints
                 ])
                 .split(inner);
 
-            let input_p = Paragraph::new(format!("{input}_")).block(
+            let name_border_style = if *active_field == CreateGroupField::Name {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let name_cursor = if *active_field == CreateGroupField::Name {
+                "_"
+            } else {
+                ""
+            };
+            let name_p = Paragraph::new(format!("{name_input}{name_cursor}")).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(name_border_style)
+                    .title(" Group Name [a-z0-9_] "),
+            );
+            frame.render_widget(name_p, chunks[0]);
+
+            let pass_border_style = if *active_field == CreateGroupField::Password {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let pass_cursor = if *active_field == CreateGroupField::Password {
+                "_"
+            } else {
+                ""
+            };
+            let pass_p = Paragraph::new(format!("{password_input}{pass_cursor}")).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(pass_border_style)
+                    .title(" Password (optional, blank for public) "),
+            );
+            frame.render_widget(pass_p, chunks[1]);
+
+            if let Some(err) = error {
+                let err_p = Paragraph::new(Span::styled(
+                    format!("Error: {err}"),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ));
+                frame.render_widget(err_p, chunks[2]);
+            }
+
+            let hints = Paragraph::new(Line::from(vec![
+                Span::styled("[Tab/Up/Down] ", Style::default().fg(Color::Cyan)),
+                Span::raw("Switch Field   "),
+                Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
+                Span::raw("Create   "),
+                Span::styled("[Esc] ", Style::default().fg(Color::Cyan)),
+                Span::raw("Cancel"),
+            ]))
+            .alignment(Alignment::Center);
+            frame.render_widget(hints, chunks[3]);
+        }
+        Modal::EnterGroupPassword {
+            group_name,
+            password_input,
+            error,
+        } => {
+            let area = centered_rect(50, 30, size);
+            frame.render_widget(Clear, area);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" 🔒 Enter Password for #{group_name} "))
+                .title_alignment(Alignment::Center)
+                .style(Style::default().fg(Color::White));
+            frame.render_widget(block.clone(), area);
+
+            let inner = block.inner(area);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([
+                    Constraint::Length(3), // password input
+                    Constraint::Length(2), // error
+                    Constraint::Length(1), // hints
+                ])
+                .split(inner);
+
+            let input_p = Paragraph::new(format!("{password_input}_")).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-                    .title(" Group Name [a-z0-9_] "),
+                    .title(" Group Password "),
             );
             frame.render_widget(input_p, chunks[0]);
 
@@ -648,7 +738,7 @@ fn render_modal(frame: &mut Frame, modal: &Modal) {
 
             let hints = Paragraph::new(Line::from(vec![
                 Span::styled("[Enter] ", Style::default().fg(Color::Cyan)),
-                Span::raw("Create   "),
+                Span::raw("Join   "),
                 Span::styled("[Esc] ", Style::default().fg(Color::Cyan)),
                 Span::raw("Cancel"),
             ]))

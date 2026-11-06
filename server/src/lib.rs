@@ -22,6 +22,7 @@ pub enum ServerError {
     GroupAlreadyExists(String),
     NotGroupMember(String),
     NotGroupCreator(String),
+    InvalidPassword(String),
     Unsupported(String),
 }
 
@@ -38,6 +39,7 @@ impl std::fmt::Display for ServerError {
             ServerError::GroupAlreadyExists(g) => write!(f, "Group '{g}' already exists"),
             ServerError::NotGroupMember(g) => write!(f, "You are not a member of group '{g}'"),
             ServerError::NotGroupCreator(g) => write!(f, "Only the creator can delete group '{g}'"),
+            ServerError::InvalidPassword(g) => write!(f, "Incorrect password for group '{g}'"),
             ServerError::Unsupported(feature) => write!(f, "{feature} is not yet implemented"),
         }
     }
@@ -58,6 +60,7 @@ pub struct Group {
     pub name: String,
     pub creator: String,
     pub members: HashSet<String>,
+    pub password: Option<String>,
 }
 
 /// In-memory state of the chat server.
@@ -173,8 +176,12 @@ impl ServerState {
             ClientMessage::DirectMessage { recipient, content } => {
                 self.handle_direct_message(client_id, recipient, content)
             }
-            ClientMessage::CreateGroup { group } => self.handle_create_group(client_id, group),
-            ClientMessage::JoinGroup { group } => self.handle_join_group(client_id, group),
+            ClientMessage::CreateGroup { group, password } => {
+                self.handle_create_group(client_id, group, password)
+            }
+            ClientMessage::JoinGroup { group, password } => {
+                self.handle_join_group(client_id, group, password)
+            }
             ClientMessage::LeaveGroup { group } => self.handle_leave_group(client_id, group),
             ClientMessage::DeleteGroup { group } => self.handle_delete_group(client_id, group),
             ClientMessage::GroupMessage { group, content } => {
@@ -279,6 +286,7 @@ impl ServerState {
         &mut self,
         client_id: ClientId,
         group_name: String,
+        password: Option<String>,
     ) -> Result<(), ServerError> {
         let username = self.assert_registered(client_id)?;
         validate_name(&group_name).map_err(|e| ServerError::InvalidName(e.to_string()))?;
@@ -290,12 +298,22 @@ impl ServerState {
         let mut members = HashSet::new();
         members.insert(username.clone());
 
+        let password = password.and_then(|p| {
+            let trimmed = p.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+
         self.groups.insert(
             group_name.clone(),
             Group {
                 name: group_name,
                 creator: username,
                 members,
+                password,
             },
         );
 
@@ -310,6 +328,7 @@ impl ServerState {
         &mut self,
         client_id: ClientId,
         group_name: String,
+        password: Option<String>,
     ) -> Result<(), ServerError> {
         let username = self.assert_registered(client_id)?;
 
@@ -318,6 +337,16 @@ impl ServerState {
                 .groups
                 .get_mut(&group_name)
                 .ok_or_else(|| ServerError::GroupNotFound(group_name.clone()))?;
+
+            if !group.members.contains(&username) {
+                if let Some(ref required_pw) = group.password {
+                    let provided_pw = password.as_deref().unwrap_or("").trim();
+                    if provided_pw != required_pw {
+                        return Err(ServerError::InvalidPassword(group_name));
+                    }
+                }
+            }
+
             let was_new = group.members.insert(username.clone());
             let members: Vec<String> = group.members.iter().cloned().collect();
             (was_new, members)
@@ -477,6 +506,7 @@ impl ServerState {
                     name: g.name.clone(),
                     creator: g.creator.clone(),
                     members,
+                    is_protected: g.password.is_some(),
                 }
             })
             .collect();
@@ -597,5 +627,37 @@ mod tests {
         let c2 = state.connect_client(tx2);
         let res = state.handle_register(c2, "alice".to_string());
         assert_eq!(res, Err(ServerError::UsernameTaken("alice".to_string())));
+    }
+
+    #[test]
+    fn test_password_protected_group_lifecycle() {
+        let mut state = ServerState::new();
+        let (tx1, _rx1) = tokio::sync::mpsc::unbounded_channel();
+        let c1 = state.connect_client(tx1);
+        assert!(state.handle_register(c1, "alice".to_string()).is_ok());
+
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
+        let c2 = state.connect_client(tx2);
+        assert!(state.handle_register(c2, "bob".to_string()).is_ok());
+
+        // Alice creates protected group 'secret_room' with password 'pass123'
+        assert!(state.handle_create_group(c1, "secret_room".to_string(), Some("pass123".to_string())).is_ok());
+
+        // Check group list reflects protection
+        let groups = state.get_group_list();
+        let grp = groups.iter().find(|g| g.name == "secret_room").unwrap();
+        assert!(grp.is_protected);
+
+        // Bob tries to join without password -> error
+        let err1 = state.handle_join_group(c2, "secret_room".to_string(), None);
+        assert_eq!(err1, Err(ServerError::InvalidPassword("secret_room".to_string())));
+
+        // Bob tries to join with wrong password -> error
+        let err2 = state.handle_join_group(c2, "secret_room".to_string(), Some("wrong".to_string()));
+        assert_eq!(err2, Err(ServerError::InvalidPassword("secret_room".to_string())));
+
+        // Bob joins with correct password -> success
+        let ok = state.handle_join_group(c2, "secret_room".to_string(), Some("pass123".to_string()));
+        assert!(ok.is_ok());
     }
 }

@@ -18,9 +18,13 @@ pub enum ClientMessage {
     CreateGroup {
         #[serde(alias = "name")]
         group: String,
+        #[serde(default)]
+        password: Option<String>,
     },
     JoinGroup {
         group: String,
+        #[serde(default)]
+        password: Option<String>,
     },
     LeaveGroup {
         group: String,
@@ -36,6 +40,8 @@ pub struct GroupInfo {
     pub name: String,
     pub creator: String,
     pub members: Vec<String>,
+    #[serde(default)]
+    pub is_protected: bool,
 }
 
 /// Messages sent from the server to clients.

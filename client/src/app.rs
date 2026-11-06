@@ -43,10 +43,23 @@ pub enum ActivePanel {
     Input,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateGroupField {
+    Name,
+    Password,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
     CreateGroup {
-        input: String,
+        name_input: String,
+        password_input: String,
+        active_field: CreateGroupField,
+        error: Option<String>,
+    },
+    EnterGroupPassword {
+        group_name: String,
+        password_input: String,
         error: Option<String>,
     },
     ConfirmLeaveGroup {
@@ -326,6 +339,10 @@ impl App {
                 if self.screen == Screen::Connect {
                     self.connect_error = Some(message);
                     self.is_connecting = false;
+                } else if let Some(Modal::EnterGroupPassword { ref mut error, .. }) = self.modal {
+                    *error = Some(message);
+                } else if let Some(Modal::CreateGroup { ref mut error, .. }) = self.modal {
+                    *error = Some(message);
                 } else {
                     self.status_message = Some(format!("Error: {message}"));
                 }
@@ -474,6 +491,17 @@ impl App {
         let prev_highlighted = self.highlighted_group().map(|g| g.name);
 
         self.groups = new_groups;
+
+        // If we were waiting in EnterGroupPassword for a group that we have now successfully joined, close modal and open chat
+        if let Some(Modal::EnterGroupPassword { ref group_name, .. }) = self.modal {
+            if let Some(grp) = self.groups.iter().find(|g| &g.name == group_name) {
+                if grp.members.contains(&self.my_username) {
+                    let name = group_name.clone();
+                    self.modal = None;
+                    self.join_and_open_group(&name);
+                }
+            }
+        }
 
         // Restore cursor position if possible
         let ordered = self.ordered_groups();
@@ -686,16 +714,19 @@ mod tests {
                 name: "other_group".to_string(),
                 creator: "bob".to_string(),
                 members: vec!["bob".to_string()],
+                is_protected: false,
             },
             GroupInfo {
                 name: "joined_group".to_string(),
                 creator: "charlie".to_string(),
                 members: vec!["alice".to_string(), "charlie".to_string()],
+                is_protected: true,
             },
             GroupInfo {
                 name: "created_group".to_string(),
                 creator: "alice".to_string(),
                 members: vec!["alice".to_string()],
+                is_protected: false,
             },
         ];
 
@@ -713,6 +744,7 @@ mod tests {
             name: "group_by_two".to_string(),
             creator: "two".to_string(),
             members: vec!["two".to_string()],
+            is_protected: false,
         }];
 
         assert_eq!(app.active_chat_group, None);
