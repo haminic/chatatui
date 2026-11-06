@@ -382,21 +382,7 @@ async fn run_app(
                                     },
                                     ActivePanel::Input => {
                                         if key.modifiers.contains(KeyModifiers::CONTROL) {
-                                            match key.code {
-                                                KeyCode::Char('l') => {
-                                                    app.open_leave_current_group_modal();
-                                                }
-                                                KeyCode::Char('d') => {
-                                                    app.open_delete_current_group_modal();
-                                                }
-                                                KeyCode::Char('m') | KeyCode::Char('v') => {
-                                                    app.open_members_current_group_modal();
-                                                }
-                                                KeyCode::Char('n') | KeyCode::Char('g') => {
-                                                    app.open_create_group_modal(None);
-                                                }
-                                                _ => {}
-                                            }
+                                            // In chat input, Ctrl shortcuts are disabled in favor of slash commands (/leave, /delete, /members, /create)
                                         } else if app.autocomplete_active {
                                             match key.code {
                                                 KeyCode::Down => {

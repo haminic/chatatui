@@ -50,7 +50,7 @@ This project is built strictly according to the course **Term Project: Socket Pr
 | **R5** | 0.5 | **Dedicated Chat Rooms**<br>Each chat between clients (both Private and Group message) must have its own isolated chat room. | Completed<br>`[x]` | Separate conversation state and isolated chat history maps (`chat_histories`) for every 1-on-1 peer and group room. |
 | **R6** | 0.5 | **Chat Box & Chat Window**<br>Each chat room must include a chat box for sending text messages and a chat window displaying sent and incoming messages. | Completed<br>`[x]` | Right panel features a dedicated message viewport with auto-scroll and formatted timestamps, plus a bottom text input box. |
 | **R7** | 1.0 | **Private Direct Messaging**<br>Direct text message to any client in the list. Only sender and receiver can see the messages. | Completed<br>`[x]` | Direct message routing routed strictly by `ClientId` to target recipient with sender echo confirmation. Peers cannot intercept. Self-DM is safely disabled. |
-| **R8** | 1.0 | **Group Creation**<br>Each client can create chat group(s), initially including only themselves as a member. | Completed<br>`[x]` | Modal group creation (`n` key or `Ctrl+N`). Instant client-side duplicate name check and server-side duplicate rejection. The server initializes the group with the creator as the sole initial member. |
+| **R8** | 1.0 | **Group Creation**<br>Each client can create chat group(s), initially including only themselves as a member. | Completed<br>`[x]` | Modal group creation (`n` key or `/create`). Instant client-side duplicate name check and server-side duplicate rejection. The server initializes the group with the creator as the sole initial member. |
 | **R9** | 1.0 | **Group List & Member Inspection**<br>Each client can see a list of all existing chat groups created by any client, with member lists. | Completed<br>`[x]` | Real-time `GroupList` sync displays all groups categorized by Created/Joined/Public with live member counts. Pressing `m` opens the member list popup. |
 | **R10** | 1.0 | **Voluntary Group Joining**<br>Clients choose to join a group chat only by themselves; they are not automatically added by the creator. | Completed<br>`[x]` | Clients select any public group and press `Enter` to join voluntarily. Group creator cannot force users into groups. |
 | **R11** | 1.0 | **Group Broadcast Messaging**<br>Send text messages to joined groups. Only members of the chat group can see the messages. | Completed<br>`[x]` | Server verifies group membership prior to routing `GroupMessage`. Non-members cannot send or receive group messages. |
@@ -146,11 +146,11 @@ This project is built strictly according to the course **Term Project: Socket Pr
     * **Auto-Scrolling:** Automatically scrolls to the latest incoming messages.
     * **Message Input Box:** Live editing with prompt, cursor indicator, and Enter to send.
 * **Interactive Dialogs & Modals:**
-  * **Create Group Modal (`n` / `Ctrl+N`):** Multi-field dialog for Group Name and optional Password with `Tab`/`↑`/`↓` field switching. Includes instant client-side duplicate name check and inline error reporting.
+  * **Create Group Modal (`n` / `/create`):** Multi-field dialog for Group Name and optional Password with `Tab`/`↑`/`↓` field switching. Includes instant client-side duplicate name check and inline error reporting.
   * **Enter Group Password Modal:** Modal displayed when joining a protected group with inline server verification and error feedback.
-  * **Leave Group Modal (`l` / `Ctrl+L` / `/leave`):** Confirmation dialog (`[y/n]`). Automatically cleans up room state, wipes chat history, and resets view to no active conversation.
-  * **Delete Group Modal (`d` / `Ctrl+D` / `/delete`):** Protected action only accessible by the group creator.
-  * **View Members Modal (`m` / `v` / `Ctrl+M` / `/members`):** Scrollable popup displaying all members currently in the highlighted group.
+  * **Leave Group Modal (`l` / `/leave`):** Confirmation dialog (`[y/n]`). Automatically cleans up room state, wipes chat history, and resets view to no active conversation.
+  * **Delete Group Modal (`d` / `/delete`):** Protected action only accessible by the group creator.
+  * **View Members Modal (`m` / `v` / `/members`):** Scrollable popup displaying all members currently in the highlighted group.
 * **Context-Aware Dynamic Action Bar:**
   * The bottom footer dynamically displays only valid hotkeys based on whether the user is in the Users list, Groups list (with different keys for creator vs member vs visitor), or Chat input.
   * Non-destructive navigation: Pressing `Esc` in the input box returns to the side panel rather than closing the program.
@@ -321,10 +321,6 @@ To satisfy requirement **R1** (running at least two clients on different physica
 | | `Esc` | Dismiss autocomplete popup (when active) / Exit input to sidebar |
 | | `Enter` | Send message (or execute slash command) |
 | | `Backspace` | Delete last character |
-| | `Ctrl + L` | Leave active group (opens confirmation) |
-| | `Ctrl + D` | Delete active group (creator only; opens confirmation) |
-| | `Ctrl + M` / `Ctrl + V` | View members of active group |
-| | `Ctrl + N` / `Ctrl + G` | Open Create Group dialog |
 | | `/leave` | Slash command to leave active group |
 | | `/delete` | Slash command to delete active group |
 | | `/members` / `/who` | Slash command to view group members |

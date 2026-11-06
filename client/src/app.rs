@@ -355,7 +355,7 @@ impl App {
             if let Some(grp) = self.groups.iter().find(|g| &g.name == grp_name) {
                 if grp.creator == self.my_username {
                     self.status_message = Some(
-                        "You created this group. Use delete (/delete or Ctrl+D) to remove it."
+                        "You created this group. Use delete (/delete) to remove it."
                             .to_string(),
                     );
                 } else if grp.members.contains(&self.my_username) {
