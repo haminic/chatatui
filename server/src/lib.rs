@@ -581,11 +581,48 @@ impl ServerState {
     }
 }
 
+fn parse_gemini_key(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            if k.trim() == "GEMINI_API_KEY" {
+                let val = v.trim().trim_matches('"').trim_matches('\'').trim();
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_gemini_api_key() -> Option<String> {
+    if let Ok(key) = std::env::var("GEMINI_API_KEY") {
+        let trimmed = key.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    for path in [".env", "../.env"] {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Some(key) = parse_gemini_key(&content) {
+                return Some(key);
+            }
+        }
+    }
+
+    None
+}
+
 async fn ask_ai(prompt: &str) -> String {
     let busy = "AI is busy, try again".to_string();
 
-    // your key
-    let Ok(key) = std::env::var("GEMINI_API_KEY") else { return busy };
+    // Look up key from environment variable or .env file
+    let Some(key) = get_gemini_api_key() else { return busy };
 
     // -d '{...}'
     let body = serde_json::json!({
@@ -720,5 +757,21 @@ mod tests {
         // Bob joins with correct password -> success
         let ok = state.handle_join_group(c2, "secret_room".to_string(), Some("pass123".to_string()));
         assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn test_parse_gemini_key() {
+        let env_content = r#"
+            # Comment line
+            SOME_OTHER_KEY=12345
+            GEMINI_API_KEY="my-secret-key-123"
+        "#;
+        assert_eq!(parse_gemini_key(env_content), Some("my-secret-key-123".to_string()));
+
+        let env_content_single_quote = "GEMINI_API_KEY='secret_key_abc'";
+        assert_eq!(parse_gemini_key(env_content_single_quote), Some("secret_key_abc".to_string()));
+
+        let env_content_no_key = "ANOTHER_KEY=xyz";
+        assert_eq!(parse_gemini_key(env_content_no_key), None);
     }
 }
