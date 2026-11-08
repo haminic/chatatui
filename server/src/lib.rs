@@ -478,6 +478,9 @@ impl ServerState {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
+        let ai_prompt = content.strip_prefix("@ai").map(|p| p.trim().to_string());
+        let group_for_ai = group_name.clone();
+
         let srv_msg = ServerMessage::GroupMessage {
             group: group_name,
             from: username,
@@ -489,6 +492,31 @@ impl ServerState {
             if let Some(&m_id) = self.users.get(member) {
                 self.send_to(m_id, srv_msg.clone());
             }
+        }
+
+        if let Some(prompt) = ai_prompt {
+            // 1. grab every member's queue while we still have self
+            let queues: Vec<_> = group
+                .members
+                .iter()
+                .filter_map(|m| self.users.get(m))
+                .filter_map(|id| self.clients.get(id))
+                .map(|session| session.tx.clone())
+                .collect();
+
+            // 2. background task: wait for the answer, then post it
+            tokio::spawn(async move {
+                let answer = ask_ai(&prompt).await;
+                let msg = ServerMessage::GroupMessage {
+                    group: group_for_ai,
+                    from: "ai".to_string(),
+                    content: answer,
+                    timestamp,
+                };
+                for q in queues {
+                    let _ = q.send(msg.clone());
+                }
+            });
         }
 
         Ok(())
@@ -551,6 +579,39 @@ impl ServerState {
     pub fn is_registered(&self, username: &str) -> bool {
         self.users.contains_key(username)
     }
+}
+
+async fn ask_ai(prompt: &str) -> String {
+    let busy = "AI is busy, try again".to_string();
+
+    // your key
+    let Ok(key) = std::env::var("GEMINI_API_KEY") else { return busy };
+
+    // -d '{...}'
+    let body = serde_json::json!({
+        "model": "gemini-3.5-flash-lite",
+        "input": prompt,
+    });
+
+    // curl -X POST ... -H ...
+    let Ok(response) = reqwest::Client::new()
+        .post("https://generativelanguage.googleapis.com/v1beta/interactions")
+        .header("x-goog-api-key", key)
+        .json(&body)
+        .send()
+        .await
+    else { return busy };
+
+    // read the reply as JSON
+    let Ok(json) = response.json::<serde_json::Value>().await else { return busy };
+
+    // steps -> the model_output step -> content[0] -> text
+    json["steps"]
+        .as_array()
+        .and_then(|steps| steps.iter().find(|s| s["type"] == "model_output"))
+        .and_then(|step| step["content"][0]["text"].as_str())
+        .map(|text| text.to_string())
+        .unwrap_or(busy)
 }
 
 /// Handles an incoming TCP connection: sets up reader and writer channels,
