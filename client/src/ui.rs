@@ -2,7 +2,9 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
+};
 
 use crate::app::{ActivePanel, App, ConnectField, CreateGroupField, Modal, Screen};
 
@@ -286,7 +288,9 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 let badge_style = if is_active_chat {
                     Style::default().fg(Color::Green)
                 } else if has_unread {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
@@ -364,16 +368,19 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 let has_unread = app.unread_messages.contains(&grp.name);
 
                 let badge_span = if has_mention {
-                    Span::styled("[@] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    Span::styled(
+                        "@ ",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 } else if is_active_chat {
-                    Span::styled("● ", Style::default().fg(Color::Green))
+                    Span::styled(" ", Style::default().fg(Color::Green))
                 } else if has_unread {
-                    Span::styled("● ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                    Span::styled("󰝥 ", Style::default().fg(Color::Green))
                 } else {
                     Span::raw("  ")
                 };
-
-                let lock_str = if grp.is_protected { "🔒 " } else { "" };
 
                 let role_badge = if is_creator {
                     "[created]"
@@ -388,7 +395,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 };
 
                 let content = format!(
-                    "{lock_str}#{name} {role} ({count})",
+                    "#{name} {role} ({count})",
                     name = grp.name,
                     role = role_badge,
                     count = grp.members.len(),
@@ -411,10 +418,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                     Style::default().fg(Color::Gray)
                 };
 
-                ListItem::new(Line::from(vec![
-                    badge_span,
-                    Span::styled(content, style),
-                ]))
+                ListItem::new(Line::from(vec![badge_span, Span::styled(content, style)]))
             })
             .collect()
     };
@@ -813,7 +817,9 @@ fn render_modal(frame: &mut Frame, modal: &Modal) {
                 .split(inner);
 
             let name_border_style = if *active_field == CreateGroupField::Name {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
@@ -831,7 +837,9 @@ fn render_modal(frame: &mut Frame, modal: &Modal) {
             frame.render_widget(name_p, chunks[0]);
 
             let pass_border_style = if *active_field == CreateGroupField::Password {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
@@ -896,7 +904,11 @@ fn render_modal(frame: &mut Frame, modal: &Modal) {
             let input_p = Paragraph::new(format!("{password_input}_")).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    .border_style(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )
                     .title(" Group Password "),
             );
             frame.render_widget(input_p, chunks[0]);
@@ -1015,8 +1027,8 @@ fn render_modal(frame: &mut Frame, modal: &Modal) {
                     ))
                 })
                 .collect();
-            let list = List::new(items)
-                .block(Block::default().borders(Borders::ALL).title(" Members "));
+            let list =
+                List::new(items).block(Block::default().borders(Borders::ALL).title(" Members "));
             frame.render_widget(list, chunks[0]);
 
             let hints = Paragraph::new(Line::from(vec![
