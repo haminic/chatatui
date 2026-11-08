@@ -507,7 +507,7 @@ impl App {
                     if let Some(grp) = self.groups.iter().find(|g| &g.name == grp_name) {
                         grp.members
                             .iter()
-                            .filter(|m| *m != &self.my_username && m.to_lowercase().starts_with(&query.to_lowercase()))
+                            .filter(|m| *m != &self.my_username && *m != "ai" && m.to_lowercase().starts_with(&query.to_lowercase()))
                             .cloned()
                             .collect()
                     } else {
@@ -516,7 +516,7 @@ impl App {
                 } else if self.active_chat_user.is_some() {
                     self.users
                         .iter()
-                        .filter(|u| *u != &self.my_username && u.to_lowercase().starts_with(&query.to_lowercase()))
+                        .filter(|u| *u != &self.my_username && *u != "ai" && u.to_lowercase().starts_with(&query.to_lowercase()))
                         .cloned()
                         .collect()
                 } else {
@@ -524,6 +524,11 @@ impl App {
                 };
 
                 candidates.sort();
+
+                // 'ai' always appears as the first candidate if matching query
+                if "ai".starts_with(&query.to_lowercase()) {
+                    candidates.insert(0, "ai".to_string());
+                }
 
                 if !candidates.is_empty() {
                     self.autocomplete_candidates = candidates;
@@ -1082,8 +1087,14 @@ mod tests {
         app.input_message = "hello @".to_string();
         app.update_autocomplete();
         assert!(app.autocomplete_active);
-        // Excludes 'alice' (me)
-        assert_eq!(app.autocomplete_candidates, vec!["bob", "bobby", "charlie"]);
+        // 'ai' appears first, excludes 'alice' (me)
+        assert_eq!(app.autocomplete_candidates, vec!["ai", "bob", "bobby", "charlie"]);
+
+        // Type 'a'
+        app.input_message = "hello @a".to_string();
+        app.update_autocomplete();
+        assert!(app.autocomplete_active);
+        assert_eq!(app.autocomplete_candidates, vec!["ai"]);
 
         // Type 'b'
         app.input_message = "hello @b".to_string();
