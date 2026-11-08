@@ -41,14 +41,21 @@ jobs:
           target: "/home/ubuntu/chatatui"
           strip_components: 2
 
-      # Step 6: Make executable and restart the systemd service
+      # Step 6: Write environment file, make executable, and restart the systemd service
       - name: Restart server service via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: GEMINI_API_KEY
           script: |
+            if [ -n "$GEMINI_API_KEY" ]; then
+              echo "GEMINI_API_KEY=$GEMINI_API_KEY" > /home/ubuntu/chatatui/.env
+              chmod 600 /home/ubuntu/chatatui/.env
+            fi
             chmod +x /home/ubuntu/chatatui/server
             sudo systemctl restart chatatui
             systemctl status chatatui --no-pager
