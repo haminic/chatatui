@@ -278,9 +278,9 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                 let has_unread = app.unread_messages.contains(user);
 
                 let badge = if is_active_chat {
-                    "● "
+                    " "
                 } else if has_unread {
-                    "● "
+                    "󰝥 "
                 } else {
                     "  "
                 };
@@ -394,8 +394,9 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                     "[public]"
                 };
 
+                let lock_prefix = if grp.is_protected { " " } else { "" };
                 let content = format!(
-                    "#{name} {role} ({count})",
+                    "{lock_prefix}#{name} {role} ({count})",
                     name = grp.name,
                     role = role_badge,
                     count = grp.members.len(),
@@ -445,7 +446,12 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
     // Chat History View
     let active_chat_opt = app.active_chat();
     let chat_title = if let Some(ref grp_name) = app.active_chat_group {
-        format!(" Group Chat #{grp_name} ")
+        let is_locked = app
+            .groups
+            .iter()
+            .any(|g| &g.name == grp_name && g.is_protected);
+        let lock_icon = if is_locked { " " } else { "" };
+        format!(" {lock_icon}Group Chat #{grp_name} ")
     } else if let Some(ref user) = app.active_chat_user {
         format!(" Chat with @{user} ")
     } else {
@@ -491,7 +497,7 @@ fn render_chat_screen(frame: &mut Frame, app: &App) {
                         };
 
                         let time_str = if msg.is_pending {
-                            "⏳ ".to_string()
+                            " ".to_string()
                         } else if let Some(t) = msg.formatted_time() {
                             format!("{t} ")
                         } else {
@@ -885,7 +891,7 @@ fn render_modal(frame: &mut Frame, modal: &Modal) {
 
             let block = Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" 🔒 Enter Password for #{group_name} "))
+                .title(format!("   Enter Password for #{group_name} "))
                 .title_alignment(Alignment::Center)
                 .style(Style::default().fg(Color::White));
             frame.render_widget(block.clone(), area);

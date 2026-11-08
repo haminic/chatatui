@@ -58,7 +58,7 @@ This project is built strictly according to the course **Term Project: Socket Pr
 ### Part 3: Special Points (4.0 pts)
 | Req | Points | Description | Status | Implementation Details |
 |:---:|:---:|:---|:---:|:---|
-| **S1** | - | **Password-Protected Private Groups**<br>Optional password authentication for private room entry. | Completed<br>`[x]` | Multi-field group creation modal with optional password. Protected groups are indicated by `🔒` prefix and `[private]` tag. Joining prompts with password modal and verifies credentials against in-memory server state. |
+| **S1** | - | **Password-Protected Private Groups**<br>Optional password authentication for private room entry. | Completed<br>`[x]` | Multi-field group creation modal with optional password. Protected groups are indicated by `` Nerd Font lock prefix and `[private]` tag. Joining prompts with password modal and verifies credentials against in-memory server state. |
 | **S2** | - | **@Mention Notifications**<br>Visual alert badge and sound/highlighting when a user's `@name` is mentioned in group chats. | Completed<br>`[x]` | Floating `@mention` username recommendations above input with Tab/Enter completion and Esc dismiss. Priority unread notifications: bright `[@]` badge for mentions (higher priority) and cyan `●` dot for regular unread messages; in-chat `[MENTION]` tag, bold yellow text highlight, and terminal audio bell (`\x07`). |
 | **S3** | - | **AI Assistant / Chatbot Integration (AI Feature)**<br>Integration with an AI service for automated responses or conversation summaries. | Planned<br>`[ ]` | Planned integration. |
 | **S4** | - | **Cloud-Based Deployment**<br>Deploying the server binary to a cloud provider with public IP/domain. | Planned<br>`[ ]` | Planned deployment. |
@@ -128,18 +128,18 @@ This project is built strictly according to the course **Term Project: Socket Pr
 * **Screen 2: Multi-Panel Chat Dashboard**
   * **Top Header:** Displays application branding and current user badge (`@username`).
   * **Left Panel (Contacts & Groups):**
-    * **Connected Users:** Displays all online users. Your own name is pinned at the top with `(you)` styling. Active conversation indicator (`●`). Unread message indicator (`●` in cyan). Self-DM is safely disabled.
+    * **Connected Users:** Displays all online users. Your own name is pinned at the top with `(you)` styling. Active conversation indicator (``). Unread message indicator (`󰝥` in cyan). Self-DM is safely disabled.
     * **Hierarchical Group Directory:** Groups are organized into:
       1. Groups you created (`[created]`)
       2. Groups you joined (`[joined]`)
       3. Other available groups (`[public]`, `[private]`, or `[Enter to join]`)
     * Dynamic group member counts displayed in real time: `#group [role] (count)`.
-    * **Password Protection Indicators:** Locked groups display a `🔒` prefix and `[private]` tag.
-    * **Priority Unread & @Mention Badges:** Groups with regular unread messages display a cyan `●` badge; groups with `@mention` notifications display a bright yellow `[@]` badge which takes **higher priority**.
+    * **Password Protection Indicators:** Locked groups display a `` Nerd Font lock prefix and `[private]` tag.
+    * **Priority Unread & @Mention Badges:** Groups with regular unread messages display a green `󰝥` badge; groups with `@mention` notifications display a bright yellow `[@]` badge which takes **higher priority**.
   * **Right Panel (Conversation & Messaging):**
     * **Chat History Window:** Isolated message history per room (DM or Group).
     * **Formatted Timestamps:** Messages display 12-hour local timestamps (`02:30 PM`) placed neatly before the username.
-    * **Message Status Badges:** Pending messages display `⏳` until server delivery acknowledgment.
+    * **Message Status Badges:** Pending messages display `` (Nerd Font hourglass) until server delivery acknowledgment.
     * **@Mention Highlighting & Audio:** Mentioned messages show a `[MENTION]` badge, render the mentioned username in bold underlined yellow, and ring the terminal audio bell (`\x07`).
     * **Floating @Mention Recommendations:** Typing `@` in the input box opens an autocomplete popup listing candidate group members (or online users in DM). Navigate with `↑`/`↓`, press `Tab` or `Enter` to autocomplete, or press `Esc` to dismiss.
     * **System Announcements:** Join/leave announcements (`* @alice joined the group *`) highlighted in italic center text.
