@@ -6,9 +6,10 @@ use server::{handle_connection, ServerState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bind_addr = std::env::args()
+    let raw_addr = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:8054".to_string());
+        .unwrap_or_else(|| format!("127.0.0.1:{}", common::DEFAULT_PORT));
+    let bind_addr = common::normalize_server_address(&raw_addr);
 
     let listener = TcpListener::bind(&bind_addr).await?;
     println!("Chatatui server listening on {}", listener.local_addr()?);

@@ -128,7 +128,7 @@ async fn run_app(
                                         outbound_tx = new_out_tx;
 
                                         worker_handle = Some(spawn_network_worker(
-                                            app.server_address.clone(),
+                                            app.normalized_server_address(),
                                             new_out_rx,
                                             inbound_tx.clone(),
                                         ));

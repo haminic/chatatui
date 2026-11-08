@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use common::{validate_name, ClientMessage, GroupInfo, ServerMessage};
+use common::{normalize_server_address, validate_name, ClientMessage, GroupInfo, ServerMessage};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatMessage {
@@ -141,8 +141,8 @@ impl App {
     pub fn new() -> Self {
         Self {
             screen: Screen::Connect,
-            connect_field: ConnectField::Username,
-            server_address: "127.0.0.1:8054".to_string(),
+            connect_field: ConnectField::ServerAddress,
+            server_address: "127.0.0.1".to_string(),
             username_input: String::new(),
             connect_error: None,
             is_connecting: false,
@@ -178,6 +178,11 @@ impl App {
             return Err("Server address cannot be empty".to_string());
         }
         validate_name(&self.username_input).map_err(|e| e.to_string())
+    }
+
+    /// Returns the server address with the default port (8054) appended if not provided.
+    pub fn normalized_server_address(&self) -> String {
+        normalize_server_address(&self.server_address)
     }
 
     /// Returns the username currently highlighted by cursor in the users list.
@@ -1242,5 +1247,15 @@ mod tests {
         // Non-duplicate name is accepted
         let is_unique = !app.groups.iter().any(|g| g.name == "new_group");
         assert!(is_unique);
+    }
+
+    #[test]
+    fn test_app_normalized_server_address() {
+        let mut app = App::new();
+        app.server_address = "127.0.0.1".to_string();
+        assert_eq!(app.normalized_server_address(), "127.0.0.1:8054");
+
+        app.server_address = "127.0.0.1:9090".to_string();
+        assert_eq!(app.normalized_server_address(), "127.0.0.1:9090");
     }
 }

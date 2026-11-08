@@ -138,7 +138,7 @@ fn render_connect_screen(frame: &mut Frame, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(addr_style)
-            .title(" Server IP:Port (e.g. 127.0.0.1:8054) "),
+            .title(" Server Address (e.g. 127.0.0.1, default port: 8054) "),
     );
     frame.render_widget(addr_p, chunks[0]);
 
